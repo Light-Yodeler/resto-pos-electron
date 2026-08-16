@@ -189,6 +189,30 @@ function readDatabaseState() {
   return state;
 }
 
+function resetTransactionData(authorization = {}) {
+  const row = database.prepare('SELECT payload FROM app_state WHERE id=1').get();
+  if (!row) return { success: false, error: 'Data utama aplikasi tidak ditemukan.' };
+  const state = JSON.parse(row.payload), ownerId = Number(authorization.ownerId), pinHash = String(authorization.pinHash || '');
+  const owner = (state.users || []).find(user => Number(user.id) === ownerId && user.role === 'owner' && user.active !== false);
+  if (!owner || !pinHash || owner.pinHash !== pinHash) return { success: false, unauthorized: true, error: 'PIN Owner tidak sesuai.' };
+  const cleaned = {
+    ...state, carts: {}, splitBills: {}, splitPersonCounters: {}, orderIds: {}, orderMeta: {}, tickets: [],
+    shift: { open: false }, shiftHistory: [], nextOrderNumber: 1, nextInvoiceNumber: 1, nextSplitBillNumber: 1, nextShiftNumber: 1
+  };
+  database.exec('BEGIN IMMEDIATE');
+  try {
+    const deletedTransactions = database.prepare('DELETE FROM transactions').run().changes;
+    const deletedShifts = database.prepare('DELETE FROM shifts').run().changes;
+    database.prepare('UPDATE app_state SET payload=?, updated_at=CURRENT_TIMESTAMP WHERE id=1').run(JSON.stringify(cleaned));
+    database.exec('COMMIT');
+    knownTransactions.clear();
+    return { success: true, deletedTransactions: Number(deletedTransactions), deletedShifts: Number(deletedShifts) };
+  } catch (error) {
+    database.exec('ROLLBACK');
+    return { success: false, error: `Reset transaksi gagal: ${error.message}` };
+  }
+}
+
 function initializeDatabase() {
   fs.mkdirSync(path.dirname(getDatabaseFile()), { recursive: true });
   database = new DatabaseSync(getDatabaseFile());
@@ -405,6 +429,7 @@ ipcMain.handle('database:restore', async () => {
     return { success: true };
   } catch (error) { return { success: false, error: `Backup tidak dapat dipulihkan: ${error.message}` }; }
 });
+ipcMain.handle('database:reset-transactions', (_event, authorization = {}) => resetTransactionData(authorization));
 ipcMain.handle('menu:backup', async (_event, menuData) => {
   if (!menuData || !Array.isArray(menuData.products) || !Array.isArray(menuData.categories)) return { success: false, error: 'Data menu tidak valid.' };
   const result = await dialog.showSaveDialog(window, {
