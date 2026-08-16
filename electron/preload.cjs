@@ -6,6 +6,7 @@ contextBridge.exposeInMainWorld('desktop', {
   listPrinters: () => ipcRenderer.invoke('printer:list'),
   backupDatabase: data => ipcRenderer.invoke('database:backup', data),
   restoreDatabase: () => ipcRenderer.invoke('database:restore'),
+  resetTransactions: authorization => ipcRenderer.invoke('database:reset-transactions', authorization),
   backupMenu: data => ipcRenderer.invoke('menu:backup', data),
   restoreMenu: () => ipcRenderer.invoke('menu:restore'),
   queryTransactions: options => ipcRenderer.invoke('transactions:query', options),
