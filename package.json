@@ -1,0 +1,29 @@
+{
+  "name": "anda-bungalows-pos",
+  "version": "1.12.1",
+  "description": "Offline desktop POS for Anda Bungalows & Restaurant",
+  "main": "electron/main.cjs",
+  "author": "Anda Bungalows & Restaurant",
+  "license": "UNLICENSED",
+  "scripts": {
+    "start": "electron .",
+    "dev": "electron .",
+    "test": "node --test tests/*.test.cjs",
+    "dummy-db": "node scripts/generate-dummy-db.cjs 100000 outputs/Anda-POS-Dummy-100K.db",
+    "dist:mac": "electron-builder --mac dmg zip",
+    "dist:win": "electron-builder --win portable --x64"
+  },
+  "devDependencies": {
+    "electron": "^37.2.6",
+    "electron-builder": "^26.0.12"
+  },
+  "build": {
+    "appId": "com.andabungalows.pos",
+    "productName": "Anda POS",
+    "directories": { "output": "release" },
+    "files": ["app/**/*", "electron/**/*", "package.json"],
+    "mac": { "category": "public.app-category.business", "target": ["dmg", "zip"] },
+    "win": { "target": ["nsis", "portable"] },
+    "nsis": { "oneClick": false, "allowToChangeInstallationDirectory": true }
+  }
+}

@@ -1,0 +1,28 @@
+<!doctype html>
+<html lang="id">
+<head>
+  <meta charset="UTF-8"><meta name="viewport" content="width=device-width,initial-scale=1">
+  <title>Anda POS</title><link rel="stylesheet" href="styles.css">
+</head>
+<body>
+  <aside class="sidebar">
+    <div class="brand"><div class="brand-mark" id="brandMark">A</div><img class="brand-logo hidden" id="brandLogo" alt="Logo restoran"><div><strong id="brandName">ANDA</strong><span id="brandSubtitle">Bungalows & Restaurant</span></div></div>
+    <nav id="nav"></nav>
+    <div class="shift-card"><span data-i18n="currentShift">Shift aktif</span><strong id="shiftName">Pagi · Kasir 01</strong><small id="shiftTime">08:00 — sekarang</small></div>
+    <button class="lang" id="langBtn">EN</button>
+  </aside>
+  <main>
+    <header><div><p class="eyebrow" id="date"></p><h1 id="pageTitle">Kasir</h1></div><div class="header-actions"><span class="online-dot"></span><span data-i18n="offlineReady">Siap offline</span><button class="icon-btn" id="openShift">◷</button><button class="avatar" id="userBtn" title="Ganti pengguna">KS</button></div></header>
+    <section id="view"></section>
+  </main>
+  <aside class="order-panel" id="orderPanel"></aside>
+  <button class="cart-reopen" id="cartReopen" title="Buka keranjang">🧾</button>
+  <div class="modal-wrap hidden" id="modal"><div class="modal" id="modalBody"></div></div>
+  <div class="toast" id="toast"></div>
+  <script src="app.js"></script>
+  <script src="enhancements.js"></script>
+  <script src="pagination.js"></script>
+  <script src="ui-v2.js"></script>
+  <script src="access-control.js"></script>
+</body>
+</html>
