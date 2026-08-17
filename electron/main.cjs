@@ -8,7 +8,9 @@ const { DatabaseSync, backup: backupSqlite } = require('node:sqlite');
 const execFileAsync = promisify(execFile);
 
 let window, database;
-const knownTransactions = new Set();
+const knownTransactions = new Set(), knownShifts = new Set();
+const dataDirectory = process.env.ANDA_POS_DATA_DIR || path.join(app.getPath('appData'), 'anda-bungalows-pos-AG');
+app.setPath('userData', dataDirectory);
 const getLegacyDataFile = () => path.join(app.getPath('userData'), 'anda-pos-data.json');
 const getDatabaseFile = () => path.join(app.getPath('userData'), 'anda-pos.db');
 const wait = milliseconds => new Promise(resolve => setTimeout(resolve, milliseconds));
@@ -152,11 +154,16 @@ async function printWindowsRaster(printerName, image, contentWidth) {
   }
 }
 
+
+
 function writeDatabaseState(data, replaceTransactions = false) {
   if (!data || typeof data !== 'object') throw new Error('Data aplikasi tidak valid.');
   const base = { ...data };
   const transactions = Array.isArray(base.transactions) ? base.transactions : [];
   delete base.transactions;
+  if (Array.isArray(base.shiftHistory)) {
+    base.shiftHistory = base.shiftHistory.slice(0, 30);
+  }
   database.exec('BEGIN IMMEDIATE');
   try {
     database.prepare('INSERT INTO app_state (id, payload, updated_at) VALUES (1, ?, CURRENT_TIMESTAMP) ON CONFLICT(id) DO UPDATE SET payload=excluded.payload, updated_at=CURRENT_TIMESTAMP').run(JSON.stringify(base));
@@ -164,6 +171,7 @@ function writeDatabaseState(data, replaceTransactions = false) {
       database.exec('DELETE FROM transactions');
       database.exec('DELETE FROM shifts');
       knownTransactions.clear();
+      knownShifts.clear();
     }
     const insert = database.prepare('INSERT OR REPLACE INTO transactions (id, business_date, payload) VALUES (?, ?, ?)');
     for (const transaction of transactions) {
@@ -173,7 +181,12 @@ function writeDatabaseState(data, replaceTransactions = false) {
       knownTransactions.add(id);
     }
     const insertShift = database.prepare('INSERT OR REPLACE INTO shifts (id, opened_at, payload) VALUES (?, ?, ?)');
-    for (const shift of (Array.isArray(base.shiftHistory) ? base.shiftHistory : [])) if (shift?.id) insertShift.run(String(shift.id), shift.openedAt || '', JSON.stringify(shift));
+    for (const shift of (Array.isArray(data.shiftHistory) ? data.shiftHistory : [])) {
+      const id = String(shift?.id || '');
+      if (!id || (!replaceTransactions && knownShifts.has(id))) continue;
+      insertShift.run(id, shift.openedAt || '', JSON.stringify(shift));
+      knownShifts.add(id);
+    }
     database.exec('COMMIT');
   } catch (error) {
     database.exec('ROLLBACK');
@@ -185,9 +198,11 @@ function readDatabaseState() {
   const row = database.prepare('SELECT payload FROM app_state WHERE id=1').get();
   if (!row) return null;
   const state = JSON.parse(row.payload);
-  state.transactions = database.prepare('SELECT payload FROM transactions ORDER BY business_date, rowid').all().map(item => JSON.parse(item.payload));
+  state.transactions = database.prepare('SELECT payload FROM transactions ORDER BY business_date DESC, rowid DESC LIMIT 100').all().map(item => JSON.parse(item.payload)).reverse();
+  state.shiftHistory = database.prepare('SELECT payload FROM shifts ORDER BY opened_at DESC, rowid DESC LIMIT 30').all().map(item => JSON.parse(item.payload));
   return state;
 }
+
 
 function resetTransactionData(authorization = {}) {
   const row = database.prepare('SELECT payload FROM app_state WHERE id=1').get();
@@ -205,10 +220,11 @@ function resetTransactionData(authorization = {}) {
     const deletedShifts = database.prepare('DELETE FROM shifts').run().changes;
     database.prepare('UPDATE app_state SET payload=?, updated_at=CURRENT_TIMESTAMP WHERE id=1').run(JSON.stringify(cleaned));
     database.exec('COMMIT');
-    knownTransactions.clear();
+    if (typeof knownTransactions !== 'undefined' && knownTransactions?.clear) knownTransactions.clear();
+    if (typeof knownShifts !== 'undefined' && knownShifts?.clear) knownShifts.clear();
     return { success: true, deletedTransactions: Number(deletedTransactions), deletedShifts: Number(deletedShifts) };
   } catch (error) {
-    database.exec('ROLLBACK');
+    try { database.exec('ROLLBACK'); } catch {}
     return { success: false, error: `Reset transaksi gagal: ${error.message}` };
   }
 }
@@ -216,9 +232,11 @@ function resetTransactionData(authorization = {}) {
 function initializeDatabase() {
   fs.mkdirSync(path.dirname(getDatabaseFile()), { recursive: true });
   database = new DatabaseSync(getDatabaseFile());
-  database.exec('PRAGMA journal_mode=WAL; PRAGMA synchronous=FULL; PRAGMA busy_timeout=5000; CREATE TABLE IF NOT EXISTS app_state (id INTEGER PRIMARY KEY CHECK(id=1), payload TEXT NOT NULL, updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP); CREATE TABLE IF NOT EXISTS transactions (id TEXT PRIMARY KEY, business_date TEXT NOT NULL, payload TEXT NOT NULL); CREATE INDEX IF NOT EXISTS idx_transactions_date ON transactions(business_date); CREATE TABLE IF NOT EXISTS shifts (id TEXT PRIMARY KEY, opened_at TEXT NOT NULL, payload TEXT NOT NULL); CREATE INDEX IF NOT EXISTS idx_shifts_opened_at ON shifts(opened_at);');
+  database.exec('PRAGMA journal_mode=WAL; PRAGMA synchronous=NORMAL; PRAGMA busy_timeout=5000; PRAGMA cache_size=-16000; CREATE TABLE IF NOT EXISTS app_state (id INTEGER PRIMARY KEY CHECK(id=1), payload TEXT NOT NULL, updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP); CREATE TABLE IF NOT EXISTS transactions (id TEXT PRIMARY KEY, business_date TEXT NOT NULL, payload TEXT NOT NULL); CREATE INDEX IF NOT EXISTS idx_transactions_date ON transactions(business_date); CREATE INDEX IF NOT EXISTS idx_transactions_shift ON transactions(json_extract(payload, \'$.shiftId\')); CREATE TABLE IF NOT EXISTS shifts (id TEXT PRIMARY KEY, opened_at TEXT NOT NULL, payload TEXT NOT NULL); CREATE INDEX IF NOT EXISTS idx_shifts_opened_at ON shifts(opened_at);');
   knownTransactions.clear();
+  knownShifts.clear();
   database.prepare('SELECT id FROM transactions').all().forEach(row => knownTransactions.add(row.id));
+  database.prepare('SELECT id FROM shifts').all().forEach(row => knownShifts.add(row.id));
   if (!database.prepare('SELECT 1 AS found FROM app_state WHERE id=1').get()) {
     try {
       const legacy = JSON.parse(fs.readFileSync(getLegacyDataFile(), 'utf8'));
@@ -228,42 +246,71 @@ function initializeDatabase() {
       if (error.code !== 'ENOENT') console.error('JSON migration failed:', error);
     }
   }
-  const stateRow = database.prepare('SELECT payload FROM app_state WHERE id=1').get();
-  if (stateRow) {
-    const savedState = JSON.parse(stateRow.payload), insertShift = database.prepare('INSERT OR REPLACE INTO shifts (id, opened_at, payload) VALUES (?, ?, ?)');
-    for (const shift of (savedState.shiftHistory || [])) if (shift?.id) insertShift.run(String(shift.id), shift.openedAt || '', JSON.stringify(shift));
-  }
 }
 
 function normalizedSearch(value) { return String(value || '').trim().toUpperCase().replace(/[^A-Z0-9]/g, ''); }
 function transactionQuery(options = {}) {
   const pageSize = [25, 50, 100].includes(Number(options.pageSize)) ? Number(options.pageSize) : 25, page = Math.max(1, Number(options.page) || 1), where = [], parameters = [];
-  if (options.from) { where.push('transactions.business_date >= ?'); parameters.push(String(options.from)); }
-  if (options.to) { where.push('transactions.business_date <= ?'); parameters.push(String(options.to)); }
+  const month = /^\d{4}-\d{2}$/.test(String(options.month || '')) ? String(options.month) : new Date().toISOString().slice(0, 7);
+  const search = normalizedSearch(options.search);
+  let effectiveFrom = options.from || '';
+  let effectiveTo = options.to || '';
+  if (!effectiveFrom && effectiveTo) {
+    effectiveFrom = `${effectiveTo.slice(0, 7)}-01`;
+  } else if (effectiveFrom && !effectiveTo) {
+    effectiveTo = effectiveFrom;
+  }
+  if (effectiveFrom) { where.push('transactions.business_date >= ?'); parameters.push(effectiveFrom); }
+  if (effectiveTo) { where.push('transactions.business_date <= ?'); parameters.push(effectiveTo); }
+  if (!effectiveFrom && !effectiveTo && !search) {
+    where.push('transactions.business_date LIKE ?');
+    parameters.push(`${month}-%`);
+  }
   if (options.payment && options.payment !== 'all') { where.push("json_extract(transactions.payload, '$.paymentCode') = ?"); parameters.push(String(options.payment)); }
   if (options.cashier && options.cashier !== 'all') { where.push("CAST(json_extract(transactions.payload, '$.cashierId') AS TEXT) = ?"); parameters.push(String(options.cashier)); }
-  const search = normalizedSearch(options.search);
-  if (search) { where.push("(UPPER(REPLACE(REPLACE(transactions.id, '-', ''), ' ', '')) LIKE ? OR UPPER(REPLACE(REPLACE(COALESCE(json_extract(transactions.payload, '$.orderId'), ''), '-', ''), ' ', '')) LIKE ?)"); parameters.push(`%${search}%`, `%${search}%`); }
+  if (search) {
+    if (/^\d{8}$/.test(search)) {
+      const dateStr = `${search.slice(0, 4)}-${search.slice(4, 6)}-${search.slice(6, 8)}`;
+      where.push('(transactions.business_date = ? OR transactions.id LIKE ?)');
+      parameters.push(dateStr, `%${search}%`);
+    } else {
+      where.push('(transactions.id LIKE ? OR UPPER(transactions.id) LIKE ?)');
+      parameters.push(`%${search}%`, `%${search}%`);
+    }
+  }
   const clause = where.length ? `WHERE ${where.join(' AND ')}` : '', total = database.prepare(`SELECT COUNT(*) AS count FROM transactions ${clause}`).get(...parameters).count, totalPages = Math.max(1, Math.ceil(total / pageSize)), safePage = Math.min(page, totalPages), offset = (safePage - 1) * pageSize;
   const rows = database.prepare(`SELECT payload FROM transactions ${clause} ORDER BY business_date DESC, rowid DESC LIMIT ? OFFSET ?`).all(...parameters, pageSize, offset).map(row => JSON.parse(row.payload));
   const summary = database.prepare(`SELECT COUNT(CASE WHEN COALESCE(json_extract(payload, '$.status'), 'closed') != 'void' THEN 1 END) AS count, COUNT(CASE WHEN json_extract(payload, '$.status') = 'void' THEN 1 END) AS voidCount, COALESCE(SUM(CASE WHEN COALESCE(json_extract(payload, '$.status'), 'closed') != 'void' THEN json_extract(payload, '$.subtotal') ELSE 0 END),0) AS subtotal, COALESCE(SUM(CASE WHEN COALESCE(json_extract(payload, '$.status'), 'closed') != 'void' THEN COALESCE(json_extract(payload, '$.discountAmount'),0) ELSE 0 END),0) AS discount, COALESCE(SUM(CASE WHEN COALESCE(json_extract(payload, '$.status'), 'closed') != 'void' THEN json_extract(payload, '$.tax') ELSE 0 END),0) AS tax, COALESCE(SUM(CASE WHEN COALESCE(json_extract(payload, '$.status'), 'closed') != 'void' THEN COALESCE(json_extract(payload, '$.taxableSubtotal'), CASE WHEN COALESCE(json_extract(payload, '$.taxRate'),0) > 0 THEN json_extract(payload, '$.tax') * 100.0 / json_extract(payload, '$.taxRate') ELSE 0 END) ELSE 0 END),0) AS taxable, COALESCE(SUM(CASE WHEN COALESCE(json_extract(payload, '$.status'), 'closed') != 'void' THEN json_extract(payload, '$.subtotal') - COALESCE(json_extract(payload, '$.discountAmount'),0) ELSE 0 END),0) AS sales, COALESCE(SUM(CASE WHEN COALESCE(json_extract(payload, '$.status'), 'closed') != 'void' THEN json_extract(payload, '$.total') ELSE 0 END),0) AS collected, COALESCE(SUM(CASE WHEN COALESCE(json_extract(payload, '$.status'), 'closed') != 'void' AND json_extract(payload, '$.paymentCode')='cash' THEN json_extract(payload, '$.total') ELSE 0 END),0) AS cash, COALESCE(SUM(CASE WHEN COALESCE(json_extract(payload, '$.status'), 'closed') != 'void' AND json_extract(payload, '$.paymentCode')='card' THEN json_extract(payload, '$.total') ELSE 0 END),0) AS card, COALESCE(SUM(CASE WHEN COALESCE(json_extract(payload, '$.status'), 'closed') != 'void' AND json_extract(payload, '$.paymentCode')='qris' THEN json_extract(payload, '$.total') ELSE 0 END),0) AS qris FROM transactions ${clause}`).get(...parameters);
   summary.nonTaxable = Math.max(0, Number(summary.sales) - Number(summary.taxable));
-  const itemWhere = [...where, "COALESCE(json_extract(transactions.payload, '$.status'), 'closed') != 'void'"], itemClause = `WHERE ${itemWhere.join(' AND ')}`;
-  const topItems = database.prepare(`SELECT json_extract(item.value, '$.name') AS name, SUM(CAST(json_extract(item.value, '$.qty') AS INTEGER)) AS qty, SUM(CAST(json_extract(item.value, '$.lineTotal') AS REAL)) AS total FROM transactions, json_each(transactions.payload, '$.lineItems') AS item ${itemClause} GROUP BY name ORDER BY qty DESC LIMIT 5`).all(...parameters);
-  const month = /^\d{4}-\d{2}$/.test(String(options.month || '')) ? String(options.month) : new Date().toISOString().slice(0, 7), graphWhere = ["business_date LIKE ?", "COALESCE(json_extract(payload, '$.status'), 'closed') != 'void'"], graphParameters = [`${month}-%`];
+  const itemWhere = [...where, "COALESCE(json_extract(transactions.payload, '$.status'), 'closed') != 'void'"], itemParameters = [...parameters];
+  const itemClause = `WHERE ${itemWhere.join(' AND ')}`;
+  const topItems = database.prepare(`SELECT json_extract(item.value, '$.name') AS name, SUM(CAST(json_extract(item.value, '$.qty') AS INTEGER)) AS qty, SUM(CAST(json_extract(item.value, '$.lineTotal') AS REAL)) AS total FROM (SELECT payload FROM transactions ${itemClause} ORDER BY business_date DESC, rowid DESC LIMIT 2000), json_each(payload, '$.lineItems') AS item GROUP BY name ORDER BY qty DESC LIMIT 5`).all(...itemParameters);
+  const graphWhere = ["business_date LIKE ?", "COALESCE(json_extract(payload, '$.status'), 'closed') != 'void'"], graphParameters = [`${month}-%`];
   if (options.payment && options.payment !== 'all') { graphWhere.push("json_extract(payload, '$.paymentCode') = ?"); graphParameters.push(String(options.payment)); }
   if (options.cashier && options.cashier !== 'all') { graphWhere.push("CAST(json_extract(payload, '$.cashierId') AS TEXT) = ?"); graphParameters.push(String(options.cashier)); }
-  if (search) { graphWhere.push("(UPPER(REPLACE(REPLACE(id, '-', ''), ' ', '')) LIKE ? OR UPPER(REPLACE(REPLACE(COALESCE(json_extract(payload, '$.orderId'), ''), '-', ''), ' ', '')) LIKE ?)"); graphParameters.push(`%${search}%`, `%${search}%`); }
+  if (search) {
+    if (/^\d{8}$/.test(search)) {
+      const dateStr = `${search.slice(0, 4)}-${search.slice(4, 6)}-${search.slice(6, 8)}`;
+      graphWhere.push('(business_date = ? OR id LIKE ?)');
+      graphParameters.push(dateStr, `%${search}%`);
+    } else {
+      graphWhere.push('(id LIKE ? OR UPPER(id) LIKE ?)');
+      graphParameters.push(`%${search}%`, `%${search}%`);
+    }
+  }
   const daily = database.prepare(`SELECT business_date AS date, SUM(CAST(json_extract(payload, '$.subtotal') AS REAL) - COALESCE(CAST(json_extract(payload, '$.discountAmount') AS REAL),0)) AS total FROM transactions WHERE ${graphWhere.join(' AND ')} GROUP BY business_date ORDER BY business_date`).all(...graphParameters);
   return { rows, total, page: safePage, pageSize, totalPages, summary, topItems, daily, month };
 }
 
+
 function shiftQuery(options = {}) {
-  const pageSize = [25, 50, 100].includes(Number(options.pageSize)) ? Number(options.pageSize) : 25, page = Math.max(1, Number(options.page) || 1), search = normalizedSearch(options.search), where = search ? "WHERE UPPER(REPLACE(REPLACE(id, '-', ''), ' ', '')) LIKE ?" : '', parameters = search ? [`%${search}%`] : [], total = database.prepare(`SELECT COUNT(*) AS count FROM shifts ${where}`).get(...parameters).count, totalPages = Math.max(1, Math.ceil(total / pageSize)), safePage = Math.min(page, totalPages), offset = (safePage - 1) * pageSize;
+  const pageSize = [25, 50, 100].includes(Number(options.pageSize)) ? Number(options.pageSize) : 25, page = Math.max(1, Number(options.page) || 1), search = normalizedSearch(options.search), where = search ? "WHERE (id LIKE ? OR UPPER(id) LIKE ?)" : '', parameters = search ? [`%${search}%`, `%${search}%`] : [], total = database.prepare(`SELECT COUNT(*) AS count FROM shifts ${where}`).get(...parameters).count, totalPages = Math.max(1, Math.ceil(total / pageSize)), safePage = Math.min(page, totalPages), offset = (safePage - 1) * pageSize;
   const shiftSales = database.prepare(`SELECT COUNT(*) AS transactionCount, COALESCE(SUM(CAST(json_extract(payload, '$.subtotal') AS REAL) - COALESCE(CAST(json_extract(payload, '$.discountAmount') AS REAL),0)),0) AS sales FROM transactions WHERE COALESCE(json_extract(payload, '$.status'), 'closed') != 'void' AND json_extract(payload, '$.shiftId') = ?`);
   const rows = database.prepare(`SELECT payload FROM shifts ${where} ORDER BY opened_at DESC, rowid DESC LIMIT ? OFFSET ?`).all(...parameters, pageSize, offset).map(row => { const shift = JSON.parse(row.payload), recalculated = shiftSales.get(shift.id); return { ...shift, transactionCount: recalculated.transactionCount, sales: recalculated.sales }; });
   return { rows, total, page: safePage, pageSize, totalPages };
 }
+
+
 
 function validateDatabaseFile(filePath) {
   const candidate = new DatabaseSync(filePath, { readOnly: true });
@@ -459,7 +506,63 @@ ipcMain.handle('menu:restore', async () => {
     return { success: true, data: { categories: payload.categories, products: payload.products } };
   } catch (error) { return { success: false, error: `Backup menu tidak dapat dibaca: ${error.message}` }; }
 });
+ipcMain.handle('report:export-excel', async (_event, data = {}) => {
+  const english = data.language === 'en';
+  const cleanName = (data.restaurantName || 'anda-pos').toLowerCase().replace(/[^a-z0-9]+/g, '-');
+  const dateStr = new Date().toISOString().slice(0, 10);
+  const result = await dialog.showSaveDialog(window, {
+    title: english ? 'Export Excel Report' : 'Ekspor Laporan Excel',
+    defaultPath: `${english ? 'report' : 'laporan'}-${cleanName}-${dateStr}.xlsx`,
+    filters: [{ name: 'Excel Workbook (*.xlsx)', extensions: ['xlsx'] }]
+  });
+  if (result.canceled || !result.filePath) return { success: false, canceled: true };
+  try {
+    let transactions = data.transactions;
+    if (!Array.isArray(transactions) || transactions.length === 0) {
+      const where = [], parameters = [];
+      let effectiveFrom = data.period?.from || '';
+      let effectiveTo = data.period?.to || '';
+      if (!effectiveFrom && effectiveTo) {
+        effectiveFrom = `${effectiveTo.slice(0, 7)}-01`;
+      } else if (effectiveFrom && !effectiveTo) {
+        effectiveTo = effectiveFrom;
+      }
+      if (effectiveFrom) { where.push('business_date >= ?'); parameters.push(effectiveFrom); }
+      if (effectiveTo) { where.push('business_date <= ?'); parameters.push(effectiveTo); }
+      if (data.filters?.payment && data.filters.payment !== 'all') {
+        where.push("json_extract(payload, '$.paymentCode') = ?");
+        parameters.push(String(data.filters.payment));
+      }
+      if (data.filters?.cashierId && data.filters.cashierId !== 'all') {
+        where.push("CAST(json_extract(payload, '$.cashierId') AS TEXT) = ?");
+        parameters.push(String(data.filters.cashierId));
+      }
+      if (data.search) {
+        const s = normalizedSearch(data.search);
+        if (/^\d{8}$/.test(s)) {
+          const dateStr = `${s.slice(0, 4)}-${s.slice(4, 6)}-${s.slice(6, 8)}`;
+          where.push('(business_date = ? OR id LIKE ?)');
+          parameters.push(dateStr, `%${s}%`);
+        } else {
+          where.push('(id LIKE ? OR UPPER(id) LIKE ?)');
+          parameters.push(`%${s}%`, `%${s}%`);
+        }
+      }
+      const clause = where.length ? `WHERE ${where.join(' AND ')}` : '';
+      transactions = database.prepare(`SELECT payload FROM transactions ${clause} ORDER BY business_date ASC, rowid ASC`).all(...parameters).map(r => JSON.parse(r.payload));
+    }
+    data.transactions = transactions;
+    const { createExcelReportWorkbook } = require('./excel-export.cjs');
+    const workbook = await createExcelReportWorkbook(data);
+    await workbook.xlsx.writeFile(result.filePath);
+    return { success: true, filePath: result.filePath, count: transactions.length };
+  } catch (error) {
+    return { success: false, error: `Ekspor Excel gagal: ${error.message}` };
+  }
+});
+
 
 app.whenReady().then(() => { initializeDatabase(); createWindow(); app.on('activate', () => BrowserWindow.getAllWindows().length || createWindow()); });
 app.on('before-quit', () => { if (database) database.close(); });
 app.on('window-all-closed', () => process.platform !== 'darwin' && app.quit());
+

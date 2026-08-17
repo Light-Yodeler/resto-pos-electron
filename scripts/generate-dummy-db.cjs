@@ -5,10 +5,10 @@ const fs = require('node:fs');
 const path = require('node:path');
 const { DatabaseSync } = require('node:sqlite');
 
-const rowCount = Math.max(1, Number(process.argv[2]) || 100000);
-const output = path.resolve(process.argv[3] || path.join(__dirname, '..', 'outputs', 'Anda-POS-Dummy-100K.db'));
-const endDate = new Date('2026-08-14T00:00:00Z');
-const dayCount = 730;
+const rowCount = Math.max(1, Number(process.argv[2]) || 1000000);
+const output = path.resolve(process.argv[3] || path.join(__dirname, '..', 'outputs', 'Anda-POS-Dummy-1M.db'));
+const endDate = new Date('2026-08-17T00:00:00Z');
+const dayCount = 1460;
 const pinHashes = {
   owner: '03ac674216f3e15c761ee1a5e255f067953623c8b388b4459e13f978d7c846f4',
   admin: '38083c7ee9121e17401883566a148aa5c2e2d55dc53bc4a94a026517dbff3c6b',
@@ -40,95 +40,150 @@ const roles = [
   { id: 'cashier', nameId: 'Kasir', nameEn: 'Cashier', system: true, permissions: ['pos','tables','kitchen','shift'] }
 ];
 
-function dateFor(index) {
+const dateCache = [];
+for (let d = 0; d < dayCount; d++) {
   const date = new Date(endDate);
-  date.setUTCDate(date.getUTCDate() - (dayCount - 1 - (index % dayCount)));
-  return date.toISOString().slice(0, 10);
+  date.setUTCDate(date.getUTCDate() - (dayCount - 1 - d));
+  const iso = date.toISOString().slice(0, 10);
+  dateCache.push({ iso, compact: iso.replaceAll('-', '') });
 }
+
 function compactDate(date) { return date.replaceAll('-', ''); }
-function shiftId(date, part) { return `SFT-${compactDate(date)}-${part === 0 ? '0001' : '0002'}`; }
+function shiftId(dateKey, part) { return `SFT-${dateKey}-${part === 0 ? '0001' : '0002'}`; }
 function roundCash(value) { return Math.ceil(value / 50000) * 50000; }
 
 fs.mkdirSync(path.dirname(output), { recursive: true });
 if (fs.existsSync(output)) fs.unlinkSync(output);
 const database = new DatabaseSync(output);
 database.exec(`
-  PRAGMA journal_mode=DELETE;
+  PRAGMA journal_mode=MEMORY;
   PRAGMA synchronous=OFF;
   PRAGMA temp_store=MEMORY;
+  PRAGMA cache_size=-64000;
   CREATE TABLE app_state (id INTEGER PRIMARY KEY CHECK(id=1), payload TEXT NOT NULL, updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP);
   CREATE TABLE transactions (id TEXT PRIMARY KEY, business_date TEXT NOT NULL, payload TEXT NOT NULL);
-  CREATE INDEX idx_transactions_date ON transactions(business_date);
   CREATE TABLE shifts (id TEXT PRIMARY KEY, opened_at TEXT NOT NULL, payload TEXT NOT NULL);
-  CREATE INDEX idx_shifts_opened_at ON shifts(opened_at);
 `);
 
 const shifts = [];
 for (let day = 0; day < dayCount; day++) {
-  const date = dateFor(day);
+  const { iso: date, compact: dateKey } = dateCache[day];
   for (let part = 0; part < 2; part++) {
     const cashier = users[2 + part];
     const openedAt = `${date}T${part === 0 ? '06:00:00' : '14:00:00'}.000Z`;
     const closedAt = `${date}T${part === 0 ? '14:00:00' : '22:00:00'}.000Z`;
-    shifts.push({ id: shiftId(date, part), name: part === 0 ? 'Shift Pagi' : 'Shift Sore', cashierId: cashier.id, cashierName: cashier.name, openedAt, closedAt, openingCash: 500000, closingCash: 500000, expectedCash: 500000, difference: 0, transactionCount: 0, sales: 0 });
+    shifts.push({ id: shiftId(dateKey, part), name: part === 0 ? 'Shift Pagi' : 'Shift Sore', cashierId: cashier.id, cashierName: cashier.name, openedAt, closedAt, openingCash: 500000, closingCash: 500000, expectedCash: 500000, difference: 0, transactionCount: 0, sales: 0 });
   }
 }
 const shiftMap = new Map(shifts.map(shift => [shift.id, shift]));
 const state = {
   language: 'id', activeView: 'reports', orderType: 'dineIn', table: 'M1', carts: {}, splitBills: {}, splitPersonCounters: {}, orderIds: {}, orderMeta: {},
   nextOrderNumber: rowCount + 1, nextInvoiceNumber: rowCount + 1, nextSplitBillNumber: 1, nextShiftNumber: shifts.length + 1,
-  settings: { kitchenEnabled: true, taxRate: 10, discountOptions: [{ id: 'disc-10', label: 'Diskon 10%', type: 'percent', value: 10 }], printerWidth: 80, receiptContentWidth: 64, receiptFontStyle: 'clear', directPrintMode: 'escpos', directPrintColumns: 42, autoCut: true, cutFeedLines: 8, printerName: '', silentPrint: false, restaurantName: 'Anda POS — DATABASE DUMMY 100K', brandLogo: '' },
-  categories: ['Makanan', 'Minuman', 'Dessert'], users, roles, user: { id: 1, name: 'Owner', role: 'owner' }, shift: { open: false }, shiftHistory: shifts,
+  settings: { kitchenEnabled: true, taxRate: 10, discountOptions: [{ id: 'disc-10', label: 'Diskon 10%', type: 'percent', value: 10 }], printerWidth: 80, receiptContentWidth: 64, receiptFontStyle: 'clear', directPrintMode: 'escpos', directPrintColumns: 42, autoCut: true, cutFeedLines: 8, printerName: '', silentPrint: false, restaurantName: 'Anda Bungalows & Restaurant', brandLogo: '' },
+  categories: ['Makanan', 'Minuman', 'Dessert'], users, roles, user: { id: 1, name: 'Owner', role: 'owner' }, shift: { open: false }, shiftHistory: shifts.slice(0, 30),
   products, tables: Array.from({ length: 20 }, (_, index) => ({ id: `M${index + 1}`, seats: [2, 4, 4, 6][index % 4], status: 'available' })), tickets: []
 };
 database.prepare('INSERT INTO app_state (id, payload) VALUES (1, ?)').run(JSON.stringify(state));
 const insertShift = database.prepare('INSERT INTO shifts (id, opened_at, payload) VALUES (?, ?, ?)');
+
 database.exec('BEGIN');
 for (const shift of shifts) insertShift.run(shift.id, shift.openedAt, JSON.stringify(shift));
 database.exec('COMMIT');
 
 const insertTransaction = database.prepare('INSERT INTO transactions (id, business_date, payload) VALUES (?, ?, ?)');
-const batchSize = 5000;
+const batchSize = 10000;
+const waiters = ['Lena', 'Wayan', 'Made', 'Komang', 'Ayu'];
+const paymentCodes = ['cash', 'card', 'qris'];
+const paymentNames = ['Tunai', 'Kartu', 'QRIS'];
+
+console.log(`Memulai pembuatan ${rowCount.toLocaleString('id-ID')} data transaksi...`);
+const startTime = Date.now();
+
 for (let batchStart = 0; batchStart < rowCount; batchStart += batchSize) {
   database.exec('BEGIN');
   const batchEnd = Math.min(rowCount, batchStart + batchSize);
   for (let index = batchStart; index < batchEnd; index++) {
-    const serial = index + 1, date = dateFor(index), dateKey = compactDate(date), part = index % 2, cashier = users[2 + part];
-    const hour = 6 + (index * 7 % 16), minute = index * 13 % 60, time = `${String(hour).padStart(2, '0')}:${String(minute).padStart(2, '0')}`;
-    const lineCount = 1 + (index % 5), lineItems = [];
+    const serial = index + 1;
+    const { iso: date, compact: dateKey } = dateCache[index % dayCount];
+    const part = index % 2;
+    const cashier = users[2 + part];
+    const hour = 6 + (index * 7 % 16), minute = index * 13 % 60;
+    const time = `${hour < 10 ? '0' + hour : hour}:${minute < 10 ? '0' + minute : minute}`;
+    const lineCount = 1 + (index % 5);
+    const lineItems = [];
     for (let line = 0; line < lineCount; line++) {
-      const product = products[(index * 7 + line * 3) % products.length], qty = 1 + ((index + line) % 3);
+      const product = products[(index * 7 + line * 3) % products.length];
+      const qty = 1 + ((index + line) % 3);
       lineItems.push({ productId: product.id, name: product.name, en: product.en, qty, price: product.price, taxable: product.taxable, miscellaneous: false, lineTotal: product.price * qty });
     }
     const subtotal = lineItems.reduce((sum, item) => sum + item.lineTotal, 0);
     const rawTaxable = lineItems.filter(item => item.taxable).reduce((sum, item) => sum + item.lineTotal, 0);
     const discountAmount = index % 17 === 0 ? Math.min(5000, subtotal) : (index % 7 === 0 ? Math.round(subtotal * 0.1) : 0);
     const taxableDiscount = subtotal ? Math.round(discountAmount * rawTaxable / subtotal) : 0;
-    const taxableSubtotal = Math.max(0, rawTaxable - taxableDiscount), taxRate = 10, tax = Math.round(taxableSubtotal * taxRate / 100);
-    const netSales = subtotal - discountAmount, total = netSales + tax, paymentCode = ['cash', 'card', 'qris'][index % 3], status = index % 97 === 0 ? 'void' : 'closed';
-    const currentShiftId = shiftId(date, part), shift = shiftMap.get(currentShiftId), tendered = paymentCode === 'cash' ? (index % 4 === 0 ? total : roundCash(total)) : null;
+    const taxableSubtotal = Math.max(0, rawTaxable - taxableDiscount);
+    const taxRate = 10;
+    const tax = Math.round(taxableSubtotal * taxRate / 100);
+    const netSales = subtotal - discountAmount;
+    const total = netSales + tax;
+    const payIdx = index % 3;
+    const paymentCode = paymentCodes[payIdx];
+    const payment = paymentNames[payIdx];
+    const status = index % 97 === 0 ? 'void' : 'closed';
+    const currentShiftId = shiftId(dateKey, part);
+    const shift = shiftMap.get(currentShiftId);
+    const tendered = paymentCode === 'cash' ? (index % 4 === 0 ? total : roundCash(total)) : null;
     const transaction = {
-      id: `INV-${dateKey}-${String(serial).padStart(6, '0')}`, orderId: `ORD-${dateKey}-${String(serial).padStart(6, '0')}`, date, time,
-      timestamp: `${date}T${time}:00.000Z`, status, orderType: index % 8 === 0 ? 'takeaway' : 'dineIn', table: index % 8 === 0 ? 'Takeaway' : `M${index % 20 + 1}`,
-      waiter: ['Lena', 'Wayan', 'Made', 'Komang', 'Ayu'][index % 5], cashier: cashier.name, cashierId: cashier.id, shiftId: currentShiftId, shiftName: shift.name,
-      payment: paymentCode === 'cash' ? 'Tunai' : paymentCode === 'card' ? 'Kartu' : 'QRIS', paymentCode, subtotal, discountAmount,
-      discountLabel: discountAmount ? (index % 17 === 0 ? 'Diskon Rp5.000' : 'Diskon 10%') : '', taxableSubtotal, taxRate, tax, total,
-      tendered, change: tendered === null ? null : tendered - total, lineItems
+      id: `INV-${dateKey}-${String(serial).padStart(7, '0')}`,
+      orderId: `ORD-${dateKey}-${String(serial).padStart(7, '0')}`,
+      date, time,
+      timestamp: `${date}T${time}:00.000Z`,
+      status,
+      orderType: index % 8 === 0 ? 'takeaway' : 'dineIn',
+      table: index % 8 === 0 ? 'Takeaway' : `M${index % 20 + 1}`,
+      waiter: waiters[index % 5],
+      cashier: cashier.name,
+      cashierId: cashier.id,
+      shiftId: currentShiftId,
+      shiftName: shift.name,
+      payment, paymentCode,
+      subtotal, discountAmount,
+      discountLabel: discountAmount ? (index % 17 === 0 ? 'Diskon Rp5.000' : 'Diskon 10%') : '',
+      taxableSubtotal, taxRate, tax, total,
+      tendered, change: tendered === null ? null : tendered - total,
+      lineItems
     };
-    if (status === 'void') Object.assign(transaction, { voidReason: 'Data dummy — pengujian void', voidAt: `${date}T23:00:00.000Z`, voidBy: 'Admin', voidById: 2, voidAuthorizedRole: 'admin', voidRequestedBy: cashier.name, voidRequestedById: cashier.id });
-    else { shift.transactionCount++; shift.sales += netSales; }
+    if (status === 'void') {
+      Object.assign(transaction, { voidReason: 'Data dummy — pengujian void', voidAt: `${date}T23:00:00.000Z`, voidBy: 'Admin', voidById: 2, voidAuthorizedRole: 'admin', voidRequestedBy: cashier.name, voidRequestedById: cashier.id });
+    } else {
+      shift.transactionCount++;
+      shift.sales += netSales;
+    }
     insertTransaction.run(transaction.id, date, JSON.stringify(transaction));
   }
   database.exec('COMMIT');
-  process.stdout.write(`\rMembuat transaksi: ${batchEnd.toLocaleString('id-ID')} / ${rowCount.toLocaleString('id-ID')}`);
+  if (batchEnd % 50000 === 0 || batchEnd === rowCount) {
+    const elapsed = ((Date.now() - startTime) / 1000).toFixed(1);
+    process.stdout.write(`\rMembuat transaksi: ${batchEnd.toLocaleString('id-ID')} / ${rowCount.toLocaleString('id-ID')} (${elapsed}s)`);
+  }
 }
 
-database.exec('ANALYZE; PRAGMA optimize; VACUUM;');
+console.log('\nMembuat indeks SQLite berkecepatan tinggi...');
+database.exec(`
+  CREATE INDEX idx_transactions_date ON transactions(business_date);
+  CREATE INDEX idx_transactions_shift ON transactions(json_extract(payload, '$.shiftId'));
+  CREATE INDEX idx_shifts_opened_at ON shifts(opened_at);
+  PRAGMA journal_mode=WAL;
+  PRAGMA synchronous=NORMAL;
+  ANALYZE;
+  PRAGMA optimize;
+`);
+
 const count = database.prepare('SELECT COUNT(*) AS count FROM transactions').get().count;
 const voidCount = database.prepare("SELECT COUNT(*) AS count FROM transactions WHERE json_extract(payload, '$.status')='void'").get().count;
 const firstDate = database.prepare('SELECT MIN(business_date) AS value FROM transactions').get().value;
 const lastDate = database.prepare('SELECT MAX(business_date) AS value FROM transactions').get().value;
 const integrity = Object.values(database.prepare('PRAGMA quick_check').get())[0];
 database.close();
-console.log(`\nSelesai: ${output}`);
-console.log(JSON.stringify({ count, voidCount, activeCount: count - voidCount, firstDate, lastDate, integrity, bytes: fs.statSync(output).size }, null, 2));
+const totalSeconds = ((Date.now() - startTime) / 1000).toFixed(1);
+console.log(`\nSelesai dalam ${totalSeconds} detik! Berkas tersimpan di: ${output}`);
+console.log(JSON.stringify({ count, voidCount, activeCount: count - voidCount, firstDate, lastDate, integrity, bytes: fs.statSync(output).size, sizeMb: (fs.statSync(output).size / (1024 * 1024)).toFixed(1) + ' MB' }, null, 2));

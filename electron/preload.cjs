@@ -9,7 +9,9 @@ contextBridge.exposeInMainWorld('desktop', {
   resetTransactions: authorization => ipcRenderer.invoke('database:reset-transactions', authorization),
   backupMenu: data => ipcRenderer.invoke('menu:backup', data),
   restoreMenu: () => ipcRenderer.invoke('menu:restore'),
+  exportExcel: data => ipcRenderer.invoke('report:export-excel', data),
   queryTransactions: options => ipcRenderer.invoke('transactions:query', options),
   updateTransaction: transaction => ipcRenderer.invoke('transactions:update', transaction),
   queryShifts: options => ipcRenderer.invoke('shifts:query', options)
 });
+

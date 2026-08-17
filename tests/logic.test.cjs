@@ -82,3 +82,107 @@ test('cart decoration is idempotent and clear-all requires an explicit warning d
 test('receipt hides tax-exempt markers and localizes item names for English printing',()=>{const fs=require('node:fs'),path=require('node:path'),source=fs.readFileSync(path.join(__dirname,'..','app','enhancements.js'),'utf8');assert.match(source,/function localizedReceiptItemName/);assert.match(source,/item\.nameEn \|\| item\.en/);assert.match(source,/localizedReceiptItemName\(x\)/);assert.equal(source.includes('<p>* Tanpa pajak</p>'),false);assert.equal(source.includes("x.taxable ? '' : ' *'"),false)});
 test('transaction reset requires an active Owner PIN and atomically clears history only',()=>{const fs=require('node:fs'),path=require('node:path'),vm=require('node:vm'),{DatabaseSync}=require('node:sqlite'),main=fs.readFileSync(path.join(__dirname,'..','electron','main.cjs'),'utf8'),database=new DatabaseSync(':memory:'),knownTransactions=new Set(['INV-1']);database.exec('CREATE TABLE app_state(id INTEGER PRIMARY KEY,payload TEXT,updated_at TEXT);CREATE TABLE transactions(id TEXT PRIMARY KEY,business_date TEXT,payload TEXT);CREATE TABLE shifts(id TEXT PRIMARY KEY,opened_at TEXT,payload TEXT);');const state={users:[{id:1,role:'owner',active:true,pinHash:'owner-hash'}],products:[{id:1,name:'Menu'}],tables:[{id:'M1'}],settings:{restaurantName:'Test'},shift:{open:true},shiftHistory:[{id:'SFT-1'}],carts:{a:[1]},splitBills:{a:[1]},tickets:[{id:'D-1'}]};database.prepare('INSERT INTO app_state VALUES(1,?,CURRENT_TIMESTAMP)').run(JSON.stringify(state));database.prepare('INSERT INTO transactions VALUES(?,?,?)').run('INV-1','2026-08-16','{}');database.prepare('INSERT INTO shifts VALUES(?,?,?)').run('SFT-1','2026-08-16','{}');const start=main.indexOf('function resetTransactionData'),end=main.indexOf('function initializeDatabase'),reset=vm.runInNewContext(`${main.slice(start,end)};resetTransactionData`,{database,knownTransactions,JSON,Number,String});assert.equal(reset({ownerId:1,pinHash:'wrong'}).unauthorized,true);assert.equal(database.prepare('SELECT COUNT(*) count FROM transactions').get().count,1);const result=reset({ownerId:1,pinHash:'owner-hash'}),saved=JSON.parse(database.prepare('SELECT payload FROM app_state WHERE id=1').get().payload);assert.equal(result.success,true);assert.equal(result.deletedTransactions,1);assert.equal(database.prepare('SELECT COUNT(*) count FROM transactions').get().count,0);assert.equal(database.prepare('SELECT COUNT(*) count FROM shifts').get().count,0);assert.equal(saved.products.length,1);assert.equal(saved.tables.length,1);assert.equal(saved.settings.restaurantName,'Test');assert.deepEqual(saved.shiftHistory,[]);assert.equal(saved.shift.open,false);assert.equal(knownTransactions.size,0);database.close()});
 test('reset control is Owner-only, bilingual, and bridged through Electron IPC',()=>{const fs=require('node:fs'),path=require('node:path'),ui=fs.readFileSync(path.join(__dirname,'..','app','ui-v2.js'),'utf8'),enhancements=fs.readFileSync(path.join(__dirname,'..','app','enhancements.js'),'utf8'),preload=fs.readFileSync(path.join(__dirname,'..','electron','preload.cjs'),'utf8'),main=fs.readFileSync(path.join(__dirname,'..','electron','main.cjs'),'utf8');assert.match(ui,/state\.user\.role === 'owner'/);assert.match(ui,/Reset seluruh transaksi/);assert.match(ui,/Reset all transactions/);assert.match(enhancements,/pinHash !== owner\.pinHash/);assert.match(enhancements,/name="understood"[^>]*required/);assert.match(preload,/resetTransactions/);assert.match(main,/database:reset-transactions/)});
+test('table transfer migrates cart, split bills, order identity, and kitchen tickets',()=>{const fs=require('node:fs'),path=require('node:path'),source=fs.readFileSync(path.join(__dirname,'..','app','app.js'),'utf8');assert.match(source,/function transferTable/);assert.match(source,/delete state\.carts\[sKey\]/);assert.match(source,/delete state\.splitBills\[sKey\]/);assert.match(source,/t\.table===sourceTable/);const mockState={language:'id',orderType:'dineIn',table:'M1',carts:{'table:M1':[{id:1,name:'Nasi Goreng',qty:2,price:50000}]},splitBills:{'table:M1':[{id:'SB-1',label:'Orang 1',items:[{id:2,name:'Es Teh',qty:1,price:10000}]}]},orderIds:{'table:M1':'ORD-001'},orderMeta:{'table:M1':{waiter:'Budi'}},tickets:[{id:'D-1',table:'M1',items:['2× Nasi Goreng']}],splitPersonCounters:{'table:M1':2}};let saved=false,modalClosed=false,rendered=false,toastMsg='';const vm=require('node:vm'),ctx={state:mockState,toast:msg=>{toastMsg=msg},save:()=>saved=true,closeModal:()=>modalClosed=true,render:()=>rendered=true,allOpenItems:k=>[...(mockState.carts[k]||[]),...(mockState.splitBills[k]||[]).flatMap(b=>b.items)],mergeItem:(cart,item,qty=item.qty)=>{const found=cart.find(x=>x.id===item.id);if(found)found.qty+=qty;else cart.push({...item,qty})}};vm.runInNewContext(source.slice(source.indexOf('function transferTable'),source.indexOf('function reservedQuantity')),ctx);ctx.transferTable('M1','M5');assert.equal(mockState.carts['table:M1'],undefined);assert.equal(mockState.splitBills['table:M1'],undefined);assert.equal(mockState.orderIds['table:M1'],undefined);assert.equal(mockState.carts['table:M5'].length,1);assert.equal(mockState.splitBills['table:M5'].length,1);assert.equal(mockState.orderIds['table:M5'],'ORD-001');assert.equal(mockState.orderMeta['table:M5'].waiter,'Budi');assert.equal(mockState.tickets[0].table,'M5');assert.equal(mockState.table,'M5');assert.equal(saved,true);assert.equal(rendered,true)});
+test('item-level discount applies to individual cart line and correctly adjusts taxable base',()=>{const fs=require('node:fs'),path=require('node:path'),source=fs.readFileSync(path.join(__dirname,'..','app','enhancements.js'),'utf8');assert.match(source,/function calculateItemDiscount/);assert.match(source,/showItemDiscountPicker/);assert.match(source,/itemDiscountsTotal/);const cart=[{id:1,price:50000,qty:2,taxable:true,itemDiscount:{type:'percent',value:10}},{id:2,price:30000,qty:1,taxable:false}];const calcDiscount=item=>{if(!item.itemDiscount)return 0;const raw=item.price*item.qty;return item.itemDiscount.type==='percent'?Math.round(raw*item.itemDiscount.value/100):item.itemDiscount.value};assert.equal(calcDiscount(cart[0]),10000);assert.equal(calcDiscount(cart[1]),0);const subtotal=cart.reduce((s,x)=>s+x.price*x.qty,0),itemDiscounts=cart.reduce((s,x)=>s+calcDiscount(x),0);const taxable=cart.reduce((s,x)=>s+(x.taxable===false?0:(x.price*x.qty-calcDiscount(x))),0),tax=Math.round(taxable*0.1),total=subtotal-itemDiscounts+tax;assert.equal(subtotal,130000);assert.equal(itemDiscounts,10000);assert.equal(taxable,90000);assert.equal(tax,9000);assert.equal(total,129000)});
+test('Excel report generation creates multi-worksheet XML Spreadsheet 2003 workbook with accounting summaries and itemized ledger',()=>{const fs=require('node:fs'),path=require('node:path'),uiSource=fs.readFileSync(path.join(__dirname,'..','app','ui-v2.js'),'utf8');assert.match(uiSource,/function generateExcelXmlReport/);assert.match(uiSource,/exportReportExcel/);assert.match(uiSource,/Worksheet ss:Name/);assert.match(uiSource,/Executive Summary/);assert.match(uiSource,/Transactions Ledger/);assert.match(uiSource,/Itemized Breakdown/);assert.match(uiSource,/xmlns:ss="urn:schemas-microsoft-com:office:spreadsheet"/)});
+test('native Excel .xlsx generator builds multi-sheet workbook with KPI summary, ledger, and itemized breakdown', async () => {
+  const { createExcelReportWorkbook } = require('../electron/excel-export.cjs');
+  const sampleData = {
+    restaurantName: 'Anda Bungalows Restaurant',
+    language: 'id',
+    period: { from: '2026-08-01', to: '2026-08-17' },
+    filters: { payment: 'Semua', cashier: 'Semua' },
+    transactions: [
+      { id: 'INV-1', date: '2026-08-17', time: '12:00', status: 'closed', payment: 'Tunai', paymentCode: 'cash', subtotal: 100000, discountAmount: 10000, taxableSubtotal: 90000, taxRate: 10, tax: 9000, total: 99000, lineItems: [{ name: 'Nasi Goreng', category: 'Makanan', qty: 2, price: 50000, discountAmount: 10000, lineTotal: 90000, taxable: true }] },
+      { id: 'INV-2', date: '2026-08-17', time: '12:30', status: 'void', voidReason: 'Salah input', voidBy: 'Owner', payment: 'QRIS', paymentCode: 'qris', subtotal: 50000, discountAmount: 0, taxableSubtotal: 50000, taxRate: 10, tax: 5000, total: 55000, lineItems: [{ name: 'Jus Mangga', category: 'Minuman', qty: 1, price: 50000, discountAmount: 0, lineTotal: 50000, taxable: true }] }
+    ]
+  };
+  const workbook = await createExcelReportWorkbook(sampleData);
+  assert.equal(workbook.worksheets.length, 3);
+  assert.equal(workbook.worksheets[0].name, 'Ringkasan Eksekutif');
+  assert.equal(workbook.worksheets[1].name, 'Buku Besar Transaksi');
+  assert.equal(workbook.worksheets[2].name, 'Rincian Item Terjual');
+  const buffer = await workbook.xlsx.writeBuffer();
+  assert.ok(buffer.length > 1000, 'buffer should be non-empty zip archive');
+  // Check PK zip magic header (0x50 0x4B 0x03 0x04) for true OOXML .xlsx
+  assert.equal(buffer[0], 0x50);
+  assert.equal(buffer[1], 0x4B);
+});
+
+test('PIN login modal renders on-screen numeric keypad and 4-box indicator with keypad handling', () => {
+  const fs = require('node:fs'), path = require('node:path'), source = fs.readFileSync(path.join(__dirname, '..', 'app', 'app.js'), 'utf8');
+  assert.match(source, /pin-login-container/);
+  assert.match(source, /pin-boxes-wrap/);
+  assert.match(source, /data-pin-idx="0"/);
+  assert.match(source, /data-pin-idx="3"/);
+  assert.match(source, /pin-keypad/);
+  assert.match(source, /data-key="clear"/);
+  assert.match(source, /data-key="backspace"/);
+  assert.match(source, /pin-dot/);
+  assert.match(source, /pin-shake/);
+  assert.match(source, /handleDigit/);
+  assert.match(source, /handleBackspace/);
+  assert.match(source, /handleClear/);
+  assert.match(source, /currentPin\.length\s*===\s*4/);
+});
+
+test('Menu Management view includes live search toolbar filtering by name, english, category, and price', () => {
+  const fs = require('node:fs'), path = require('node:path'), source = fs.readFileSync(path.join(__dirname, '..', 'app', 'app.js'), 'utf8');
+  assert.match(source, /menuMgmtSearchQuery/);
+  assert.match(source, /id="menuMgmtSearch"/);
+  assert.match(source, /menu-mgmt-toolbar/);
+  assert.match(source, /const ms=\$\('#menuMgmtSearch'\)/);
+  assert.match(source, /matchName \|\| matchEn \|\| matchCat \|\| matchPrice/);
+
+  // Test live search filter logic
+  const products = [
+    { id: 1, name: 'Nasi Goreng Anda', en: 'Anda Fried Rice', category: 'Makanan', price: 68000 },
+    { id: 2, name: 'Ikan Bakar Jimbaran', en: 'Jimbaran Grilled Fish', category: 'Makanan', price: 115000 },
+    { id: 6, name: 'Es Kelapa Muda', en: 'Iced Young Coconut', category: 'Minuman', price: 35000 },
+    { id: 9, name: 'Pisang Goreng', en: 'Banana Fritters', category: 'Dessert', price: 42000 }
+  ];
+
+  const filterMenu = (query) => {
+    const q = query.trim().toLowerCase();
+    return products.filter(p => {
+      if (!q) return true;
+      const matchName = (p.name || '').toLowerCase().includes(q);
+      const matchEn = (p.en || '').toLowerCase().includes(q);
+      const matchCat = (p.category || '').toLowerCase().includes(q);
+      const matchPrice = String(p.price || '').includes(q);
+      return matchName || matchEn || matchCat || matchPrice;
+    });
+  };
+
+  assert.equal(filterMenu('goreng').length, 2); // Nasi Goreng & Pisang Goreng
+  assert.equal(filterMenu('coconut').length, 1); // Es Kelapa Muda by english name
+  assert.equal(filterMenu('minuman').length, 1); // By category
+  assert.equal(filterMenu('115000').length, 1); // By price
+  assert.equal(filterMenu('xyz999').length, 0); // No match
+});
+
+test('Header provides a dedicated logout button with confirmation dialog that locks session and prompts user PIN', () => {
+  const fs = require('node:fs'), path = require('node:path');
+  const htmlSource = fs.readFileSync(path.join(__dirname, '..', 'app', 'index.html'), 'utf8');
+  const jsSource = fs.readFileSync(path.join(__dirname, '..', 'app', 'app.js'), 'utf8');
+  const cssSource = fs.readFileSync(path.join(__dirname, '..', 'app', 'styles.css'), 'utf8');
+
+  // Check HTML button
+  assert.match(htmlSource, /id="logoutBtn"/);
+  assert.match(htmlSource, /class="logout-btn"/);
+  assert.match(htmlSource, /data-i18n="logout"/);
+
+  // Check CSS
+  assert.match(cssSource, /\.logout-btn/);
+
+  // Check JS logic
+  assert.match(jsSource, /logout:\s*'Keluar'/);
+  assert.match(jsSource, /logout:\s*'Log out'/);
+  assert.match(jsSource, /function showLogoutConfirmation/);
+  assert.match(jsSource, /id="confirmLogout"/);
+  assert.match(jsSource, /sessionLocked\s*=\s*true/);
+  assert.match(jsSource, /showUsers\(true\)/);
+  assert.match(jsSource, /#logoutBtn/);
+});
+
+

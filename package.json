@@ -20,10 +20,33 @@
   "build": {
     "appId": "com.andabungalows.pos",
     "productName": "Anda POS",
-    "directories": { "output": "release" },
-    "files": ["app/**/*", "electron/**/*", "package.json"],
-    "mac": { "category": "public.app-category.business", "target": ["dmg", "zip"] },
-    "win": { "target": ["nsis", "portable"] },
-    "nsis": { "oneClick": false, "allowToChangeInstallationDirectory": true }
+    "directories": {
+      "output": "release"
+    },
+    "files": [
+      "app/**/*",
+      "electron/**/*",
+      "package.json"
+    ],
+    "mac": {
+      "category": "public.app-category.business",
+      "target": [
+        "dmg",
+        "zip"
+      ]
+    },
+    "win": {
+      "target": [
+        "nsis",
+        "portable"
+      ]
+    },
+    "nsis": {
+      "oneClick": false,
+      "allowToChangeInstallationDirectory": true
+    }
+  },
+  "dependencies": {
+    "exceljs": "^4.4.0"
   }
 }

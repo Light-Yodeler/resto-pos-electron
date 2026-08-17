@@ -1,26 +1,15 @@
-# Dependencies and generated builds
 node_modules/
 release/
+dist/
 outputs/
-work/
-
-# Local databases and application data
+*.dmg
+*.zip
+*.blockmap
 *.db
+*.db-journal
 *.db-wal
 *.db-shm
-*.andapos
-*.andamenu
-
-# Local environment and logs
-.env
-.env.*
-!.env.example
-*.log
-npm-debug.log*
-
-# Operating-system and editor files
 .DS_Store
-Thumbs.db
-.idea/
-.vscode/
-
+.env
+.env.local
+*.log

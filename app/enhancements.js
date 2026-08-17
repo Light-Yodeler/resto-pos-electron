@@ -29,16 +29,36 @@ function discountForItems(items, subtotal) {
   return { amount: Math.min(subtotal, amount), option };
 }
 
+function calculateItemDiscount(item) {
+  if (!item || !item.itemDiscount) return 0;
+  const qty = Number(item.qty) || 0;
+  const rawTotal = (Number(item.price) || 0) * qty;
+  if (rawTotal <= 0) return 0;
+  if (item.itemDiscount.type === 'percent') {
+    return Math.min(rawTotal, Math.round(rawTotal * (Number(item.itemDiscount.value) || 0) / 100));
+  }
+  const unitDiscount = Number(item.itemDiscount.value) || 0;
+  return Math.min(rawTotal, Math.round(unitDiscount * (item.itemDiscount.perUnit !== false ? qty : 1)));
+}
+
 totals = function(items = currentCart(), forcedDiscount = null) {
   const subtotal = rawSubtotal(items);
-  const rawTaxableSubtotal = items.reduce((sum, item) => sum + (item.taxable === false ? 0 : Number(item.price || 0) * Number(item.qty || 0)), 0);
-  const selected = discountForItems(items, subtotal);
-  const discountAmount = Math.max(0, Math.min(subtotal, forcedDiscount === null ? selected.amount : Number(forcedDiscount) || 0));
-  const taxableDiscount = subtotal ? Math.round(discountAmount * rawTaxableSubtotal / subtotal) : 0;
-  const taxableSubtotal = Math.max(0, rawTaxableSubtotal - taxableDiscount);
+  const itemDiscountsTotal = items.reduce((sum, item) => sum + calculateItemDiscount(item), 0);
+  const remainingSubtotal = Math.max(0, subtotal - itemDiscountsTotal);
+  const rawTaxableSubtotal = items.reduce((sum, item) => {
+    if (item.taxable === false) return sum;
+    const itemRaw = Number(item.price || 0) * Number(item.qty || 0);
+    const itemDisc = calculateItemDiscount(item);
+    return sum + Math.max(0, itemRaw - itemDisc);
+  }, 0);
+  const selected = discountForItems(items, remainingSubtotal);
+  const orderDiscountAmount = Math.max(0, Math.min(remainingSubtotal, forcedDiscount === null ? selected.amount : Number(forcedDiscount) || 0));
+  const totalDiscountAmount = itemDiscountsTotal + orderDiscountAmount;
+  const taxableOrderDiscount = remainingSubtotal > 0 ? Math.round(orderDiscountAmount * rawTaxableSubtotal / remainingSubtotal) : 0;
+  const taxableSubtotal = Math.max(0, rawTaxableSubtotal - taxableOrderDiscount);
   const taxRate = currentTaxRate();
   const tax = Math.round(taxableSubtotal * taxRate / 100);
-  return { subtotal, discountAmount, discountLabel: selected.option?.label || '', taxableSubtotal, taxRate, tax, total: subtotal - discountAmount + tax };
+  return { subtotal, itemDiscountsTotal, orderDiscountAmount, discountAmount: totalDiscountAmount, discountLabel: selected.option?.label || (itemDiscountsTotal ? (state.language === 'en' ? 'Item discount' : 'Diskon item') : ''), taxableSubtotal, taxRate, tax, total: subtotal - totalDiscountAmount + tax };
 };
 
 function orderContextReady() {
@@ -83,16 +103,76 @@ function showWaiterPromptForMisc(item) {
   };
 }
 
+function showItemDiscountPicker(cartIndex) {
+  const cart = currentCart(), item = cart[cartIndex];
+  if (!item) return;
+  const english = state.language === 'en', itemName = english ? (item.en || item.name) : item.name, selectedId = item.itemDiscount?.id || '';
+  openModal(`<h2>${english ? `Discount for ${esc(itemName)}` : `Diskon untuk ${esc(itemName)}`}</h2><p class="muted">${Number(item.qty)}× @ ${money(item.price)} = <strong>${money(item.price * item.qty)}</strong></p><div class="discount-picker"><button data-item-discount-choice="" class="${selectedId ? '' : 'selected'}"><strong>${english ? 'No discount' : 'Tanpa diskon'}</strong><span>${english ? 'Regular price' : 'Harga normal'}</span></button>${state.settings.discountOptions.map(x => `<button data-item-discount-choice="${esc(x.id)}" class="${selectedId === x.id ? 'selected' : ''}"><strong>${esc(x.label)}</strong><span>${x.type === 'percent' ? `${x.value}%` : money(x.value)}</span></button>`).join('')}</div><div class="modal-actions"><button type="button" class="secondary" id="backToDiscountManager">${english ? 'Back' : 'Kembali'}</button></div>`);
+  $('#backToDiscountManager').onclick = showDiscountPicker;
+  document.querySelectorAll('[data-item-discount-choice]').forEach(button => {
+    button.onclick = async () => {
+      const choiceId = button.dataset.itemDiscountChoice;
+      if (!choiceId) delete item.itemDiscount;
+      else {
+        const option = state.settings.discountOptions.find(x => x.id === choiceId);
+        if (option) item.itemDiscount = { id: option.id, label: option.label, type: option.type, value: option.value };
+      }
+      await save(); showDiscountPicker(); renderOrder();
+      toast(choiceId ? (english ? 'Item discount applied.' : 'Diskon item diterapkan.') : (english ? 'Item discount removed.' : 'Diskon item dihapus.'));
+    };
+  });
+}
+
 function showDiscountPicker() {
   commercialDefaults();
-  if (!currentCart().length && !currentSplitBills().length) { toast('Tambahkan item sebelum memilih diskon.'); return; }
-  const selected = currentOrderMeta()?.discountId || '';
-  openModal(`<h2>Pilih diskon</h2><p class="muted">Diskon diterapkan sebelum pajak. Diskon nominal dibagi proporsional pada split bill.</p><div class="discount-picker"><button data-discount-choice="" class="${selected ? '' : 'selected'}"><strong>Tanpa diskon</strong><span>Harga normal</span></button>${state.settings.discountOptions.map(x => `<button data-discount-choice="${esc(x.id)}" class="${selected === x.id ? 'selected' : ''}"><strong>${esc(x.label)}</strong><span>${x.type === 'percent' ? `${x.value}%` : money(x.value)}</span></button>`).join('')}</div><div class="modal-actions"><button class="secondary close-modal">Batal</button></div>`);
+  const cart = currentCart(), bills = currentSplitBills();
+  if (!cart.length && !bills.length) { toast(state.language === 'en' ? 'Add items before choosing discounts.' : 'Tambahkan item sebelum memilih diskon.'); return; }
+  const selected = currentOrderMeta()?.discountId || '', english = state.language === 'en';
+  const orderSection = `<div class="discount-manager-section"><h3><span>1. ${english ? 'Whole Order Discount' : 'Diskon Seluruh Pesanan'}</span></h3><p class="muted">${english ? 'Discounts apply before tax.' : 'Diskon diterapkan sebelum pajak. Diskon nominal dibagi proporsional pada split bill.'}</p><div class="discount-picker"><button data-discount-choice="" class="${selected ? '' : 'selected'}"><strong>${english ? 'No discount' : 'Tanpa diskon'}</strong><span>${english ? 'Regular price' : 'Harga normal'}</span></button>${state.settings.discountOptions.map(x => `<button data-discount-choice="${esc(x.id)}" class="${selected === x.id ? 'selected' : ''}"><strong>${esc(x.label)}</strong><span>${x.type === 'percent' ? `${x.value}%` : money(x.value)}</span></button>`).join('')}</div></div>`;
+  const itemRows = cart.map((item, idx) => {
+    const itemName = english ? (item.en || item.name) : item.name, disc = calculateItemDiscount(item);
+    return `<div class="discount-item-row"><div><strong>${Number(item.qty)}× ${esc(itemName)}</strong><small>${money(item.price * item.qty)}${disc ? ` · <span style="color:var(--leaf);font-weight:700">−${money(disc)} (${esc(item.itemDiscount.label)})</span>` : ''}</small></div><div class="discount-item-actions"><button type="button" class="mini" data-item-disc-idx="${idx}">${disc ? (english ? 'Change' : 'Ubah') : (english ? '+ Discount' : '+ Diskon')}</button>${disc ? `<button type="button" class="mini danger-text" data-item-disc-clear="${idx}">×</button>` : ''}</div></div>`;
+  }).join('') || `<p class="muted">${english ? 'No items in active cart.' : 'Tidak ada item dalam keranjang aktif.'}</p>`;
+  const itemSection = `<div class="discount-manager-section"><h3><span>2. ${english ? 'Item-Specific Discounts' : 'Diskon per Item Tertentu'}</span></h3><div class="discount-item-list">${itemRows}</div></div>`;
+  openModal(`<h2>${english ? 'Discounts' : 'Pilihan Diskon'}</h2><p class="muted">${english ? 'Discounts apply before tax.' : 'Diskon diterapkan sebelum pajak.'}</p><div class="discount-manager-wrap">${orderSection}${itemSection}</div><div class="modal-actions"><button class="secondary close-modal">${english ? 'Close' : 'Tutup'}</button></div>`);
+  $('#modalBody').classList.add('wide');
   document.querySelectorAll('[data-discount-choice]').forEach(button => button.onclick = async () => {
     state.orderMeta[cartKey()] ||= { waiter: '—', createdAt: new Date().toISOString() };
     state.orderMeta[cartKey()].discountId = button.dataset.discountChoice || null;
     state.orderMeta[cartKey()].discountUsed = 0;
-    await save(); closeModal(); renderOrder(); toast(button.dataset.discountChoice ? 'Diskon diterapkan.' : 'Diskon dihapus.');
+    await save(); closeModal(); renderOrder(); toast(button.dataset.discountChoice ? (english ? 'Order discount applied.' : 'Diskon order diterapkan.') : (english ? 'Order discount removed.' : 'Diskon order dihapus.'));
+  });
+  document.querySelectorAll('[data-item-disc-idx]').forEach(btn => btn.onclick = () => showItemDiscountPicker(Number(btn.dataset.itemDiscIdx)));
+  document.querySelectorAll('[data-item-disc-clear]').forEach(btn => btn.onclick = async () => {
+    const idx = Number(btn.dataset.itemDiscClear);
+    if (cart[idx]) {
+      delete cart[idx].itemDiscount;
+      await save(); showDiscountPicker(); renderOrder();
+      toast(english ? 'Item discount removed.' : 'Diskon item dihapus.');
+    }
+  });
+}
+
+function showTransferTableModal(sourceTable = state.table) {
+  if (state.orderType !== 'dineIn') {
+    toast(state.language === 'en' ? 'Table transfer is only for dine-in orders.' : 'Pindah meja hanya untuk pesanan dine-in.');
+    return;
+  }
+  const sourceKey = `table:${sourceTable}`, sourceItems = allOpenItems(sourceKey);
+  if (!sourceItems.length) { toast(state.language === 'en' ? 'No items to transfer.' : 'Tidak ada pesanan untuk dipindahkan.'); return; }
+  const availableTables = state.tables.filter(t => t.id !== sourceTable), english = state.language === 'en';
+  openModal(`<h2>${english ? `Move order from Table ${sourceTable}` : `Pindah pesanan Meja ${sourceTable}`}</h2><p class="muted">${english ? 'Choose the destination table for this guest.' : 'Pilih meja tujuan untuk memindahkan pesanan tamu ini.'}</p><div class="table-picker-grid">${availableTables.map(t => {
+    const isOccupied = allOpenItems(`table:${t.id}`).length > 0;
+    return `<button type="button" class="table-card ${isOccupied ? 'occupied' : 'available'}" data-transfer-target="${esc(t.id)}"><strong>${esc(t.id)}</strong><span>${t.seats} ${english ? 'seats' : 'kursi'} · ${isOccupied ? (english ? 'Occupied (Merge)' : 'Terisi (Gabung)') : (english ? 'Available' : 'Kosong')}</span></button>`;
+  }).join('')}</div><div class="modal-actions"><button type="button" class="secondary close-modal">${english ? 'Cancel' : 'Batal'}</button></div>`);
+  document.querySelectorAll('[data-transfer-target]').forEach(button => {
+    button.onclick = () => {
+      const targetTable = button.dataset.transferTarget, targetOccupied = allOpenItems(`table:${targetTable}`).length > 0;
+      if (targetOccupied) {
+        if (!confirm(english ? `Table ${targetTable} already has an active order. Merge orders into Table ${targetTable}?` : `Meja ${targetTable} sudah memiliki pesanan. Gabungkan pesanan ke Meja ${targetTable}?`)) return;
+      }
+      transferTable(sourceTable, targetTable);
+    };
   });
 }
 
@@ -105,8 +185,13 @@ function savedBillItemsHTML(items) {
 
 renderOrder = function() {
   const panel = $('#orderPanel'), cart = currentCart(), bills = currentSplitBills(), sum = totals(cart), orderId = state.orderIds[cartKey()], discount = currentDiscount();
-  const tableLabel = state.orderType === 'takeaway' ? 'Takeaway' : ((explicitTableSelection || allOpenItems(`table:${state.table}`).length) ? `Meja ${state.table}` : 'Pilih meja');
-  panel.innerHTML = `<div class="order-head"><div><p class="eyebrow">${tableLabel}</p><h2>${orderId || 'Pesanan baru'}</h2></div><button class="icon-btn" id="clearCart">×</button></div><div class="order-type"><button data-type="dineIn" class="${state.orderType === 'dineIn' ? 'active' : ''}">${t('dineIn')}</button><button data-type="takeaway" class="${state.orderType === 'takeaway' ? 'active' : ''}">${t('takeaway')}</button></div><div class="cart-tools"><button class="secondary" id="addMisc">＋ Miscellaneous</button><button class="secondary" id="selectDiscount">％ ${discount ? esc(discount.label) : 'Diskon'}</button></div>${bills.length ? `<div class="saved-bills"><div class="saved-bills-title"><strong>Bill tersimpan</strong><button class="mini" id="manageBills">Kelola semua</button></div>${bills.map(b => { const bt = totals(b.items), quantity = b.items.reduce((s, i) => s + i.qty, 0); return `<div class="saved-bill-card"><div class="saved-bill-summary"><strong>${esc(b.label)}</strong><small>${quantity} ${state.language === 'en' ? 'portions' : 'porsi'} · ${money(bt.total)}</small></div><div class="saved-bill-card-actions"><button class="mini unpaid-saved-bill" data-unpaid-bill="${b.id}">Unpaid</button><button class="mini pay-saved-bill" data-pay-bill="${b.id}">Bayar</button></div>${savedBillItemsHTML(b.items)}</div>`; }).join('')}</div>` : ''}<div class="cart">${cart.length ? cart.map(x => `<div class="cart-item"><div><strong>${esc(state.language === 'id' ? x.name : x.en)}</strong><small>${money(x.price)} · ${x.taxable === false ? 'tanpa pajak' : dynamicTaxLabel().toLowerCase()}${x.miscellaneous ? ' · miscellaneous' : ''}</small></div><div class="qty"><button data-minus="${x.id}">−</button><b>${x.qty}</b><button data-plus="${x.id}">+</button></div></div>`).join('') : `<div class="cart-empty">◌<br><br>${bills.length ? 'Semua item berada dalam bill tersimpan.' : t('empty')}</div>`}</div><div class="totals"><div class="total-row"><span>Subtotal</span><b>${money(sum.subtotal)}</b></div>${sum.discountAmount ? `<div class="total-row discount-row"><span>${esc(discount?.label || 'Diskon')}</span><b>−${money(sum.discountAmount)}</b></div>` : ''}<div class="total-row"><span>Dasar kena pajak</span><b>${money(sum.taxableSubtotal)}</b></div><div class="total-row"><span>${dynamicTaxLabel()}</span><b>${money(sum.tax)}</b></div><div class="total-row grand"><span>Total</span><b>${money(sum.total)}</b></div></div><div class="prebill-actions"><button class="secondary" id="unpaidBill" ${!cart.length ? 'disabled' : ''}>Cetak unpaid bill</button></div><div class="pay-actions"><button class="secondary" id="splitBtn" ${!cart.length && !bills.length ? 'disabled' : ''}>${bills.length ? 'Kelola split' : 'Split bill'}</button><button class="primary" id="payBtn" ${!cart.length ? 'disabled' : ''}>Bayar · ${money(sum.total)}</button></div>`;
+  const hasItems = allOpenItems(`table:${state.table}`).length > 0, isDineIn = state.orderType === 'dineIn';
+  const tableLabel = !isDineIn ? 'Takeaway' : ((explicitTableSelection || hasItems) ? `Meja ${state.table}` : 'Pilih meja');
+  const transferButton = isDineIn && hasItems ? `<button type="button" class="transfer-btn" id="transferTableBtn" title="Pindah meja">⇄ Pindah</button>` : '';
+  panel.innerHTML = `<div class="order-head"><div><p class="eyebrow">${tableLabel} ${transferButton}</p><h2>${orderId || 'Pesanan baru'}</h2></div><button class="icon-btn" id="clearCart">×</button></div><div class="order-type"><button data-type="dineIn" class="${state.orderType === 'dineIn' ? 'active' : ''}">${t('dineIn')}</button><button data-type="takeaway" class="${state.orderType === 'takeaway' ? 'active' : ''}">${t('takeaway')}</button></div><div class="cart-tools"><button class="secondary" id="addMisc">＋ Miscellaneous</button><button class="secondary" id="selectDiscount">％ ${discount ? esc(discount.label) : (sum.itemDiscountsTotal ? 'Diskon Item' : 'Diskon')}</button></div>${bills.length ? `<div class="saved-bills"><div class="saved-bills-title"><strong>Bill tersimpan</strong><button class="mini" id="manageBills">Kelola semua</button></div>${bills.map(b => { const bt = totals(b.items), quantity = b.items.reduce((s, i) => s + i.qty, 0); return `<div class="saved-bill-card"><div class="saved-bill-summary"><strong>${esc(b.label)}</strong><small>${quantity} ${state.language === 'en' ? 'portions' : 'porsi'} · ${money(bt.total)}</small></div><div class="saved-bill-card-actions"><button class="mini unpaid-saved-bill" data-unpaid-bill="${b.id}">Unpaid</button><button class="mini pay-saved-bill" data-pay-bill="${b.id}">Bayar</button></div>${savedBillItemsHTML(b.items)}</div>`; }).join('')}</div>` : ''}<div class="cart">${cart.length ? cart.map(x => {
+    const itemDisc = calculateItemDiscount(x);
+    return `<div class="cart-item"><div><strong>${esc(state.language === 'id' ? x.name : x.en)}</strong><small>${money(x.price)} · ${x.taxable === false ? 'tanpa pajak' : dynamicTaxLabel().toLowerCase()}${x.miscellaneous ? ' · miscellaneous' : ''}</small>${itemDisc ? `<small class="item-discount-label">🏷️ ${esc(x.itemDiscount?.label || 'Diskon')} (−${money(itemDisc)})</small>` : ''}</div><div class="qty"><button data-minus="${x.id}">−</button><b>${x.qty}</b><button data-plus="${x.id}">+</button></div></div>`;
+  }).join('') : `<div class="cart-empty">◌<br><br>${bills.length ? 'Semua item berada dalam bill tersimpan.' : t('empty')}</div>`}</div><div class="totals"><div class="total-row"><span>Subtotal</span><b>${money(sum.subtotal)}</b></div>${sum.discountAmount ? `<div class="total-row discount-row"><span>${esc(sum.discountLabel || discount?.label || 'Diskon')}</span><b>−${money(sum.discountAmount)}</b></div>` : ''}<div class="total-row"><span>Dasar kena pajak</span><b>${money(sum.taxableSubtotal)}</b></div><div class="total-row"><span>${dynamicTaxLabel()}</span><b>${money(sum.tax)}</b></div><div class="total-row grand"><span>Total</span><b>${money(sum.total)}</b></div></div><div class="prebill-actions"><button class="secondary" id="unpaidBill" ${!cart.length ? 'disabled' : ''}>Cetak unpaid bill</button></div><div class="pay-actions"><button class="secondary" id="splitBtn" ${!cart.length && !bills.length ? 'disabled' : ''}>${bills.length ? 'Kelola split' : 'Split bill'}</button><button class="primary" id="payBtn" ${!cart.length ? 'disabled' : ''}>Bayar · ${money(sum.total)}</button></div>`;
   decorateOrderPanel(); bindOrder();
 };
 
@@ -120,6 +205,8 @@ bindOrder = function() {
   });
   $('#addMisc').onclick = showMiscellaneousForm;
   $('#selectDiscount').onclick = showDiscountPicker;
+  const transferBtn = $('#transferTableBtn');
+  if (transferBtn) transferBtn.onclick = () => showTransferTableModal();
   $('#unpaidBill').onclick = () => showUnpaidBill(currentCart());
   document.querySelectorAll('[data-unpaid-bill]').forEach(button => button.onclick = () => {
     const bill = currentSplitBills().find(x => x.id === button.dataset.unpaidBill); showUnpaidBill(bill.items, bill.personNumber);
@@ -128,7 +215,7 @@ bindOrder = function() {
 
 function provisionalBill(items, person = null) {
   const sum = totals(items), now = new Date(), meta = currentOrderMeta() || {};
-  return { id: `UNPAID-${state.orderIds[cartKey()] || ensureOrderId()}`, orderId: state.orderIds[cartKey()], status: 'unpaid', date: businessDate(now), time: now.toLocaleTimeString('id-ID', { hour: '2-digit', minute: '2-digit' }), payment: 'BELUM DIBAYAR / UNPAID', cashier: state.user.name, cashierId: state.user.id, shiftId: state.shift.id, shiftName: state.shift.name, waiter: meta.waiter || '—', table: state.orderType === 'dineIn' ? state.table : 'Takeaway', splitPerson: person, ...sum, lineItems: items.map(x => ({ productId: x.id, name: x.name, nameEn: x.en, category: x.category, qty: x.qty, price: x.price, taxable: x.taxable !== false, miscellaneous: Boolean(x.miscellaneous), lineTotal: x.price * x.qty })) };
+  return { id: `UNPAID-${state.orderIds[cartKey()] || ensureOrderId()}`, orderId: state.orderIds[cartKey()], status: 'unpaid', date: businessDate(now), time: now.toLocaleTimeString('id-ID', { hour: '2-digit', minute: '2-digit' }), payment: 'BELUM DIBAYAR / UNPAID', cashier: state.user.name, cashierId: state.user.id, shiftId: state.shift.id, shiftName: state.shift.name, waiter: meta.waiter || '—', table: state.orderType === 'dineIn' ? state.table : 'Takeaway', splitPerson: person, ...sum, lineItems: items.map(x => ({ productId: x.id, name: x.name, nameEn: x.en, category: x.category, qty: x.qty, price: x.price, taxable: x.taxable !== false, miscellaneous: Boolean(x.miscellaneous), itemDiscount: x.itemDiscount ? { ...x.itemDiscount } : null, discountAmount: calculateItemDiscount(x), lineTotal: Math.max(0, x.price * x.qty - calculateItemDiscount(x)), rawLineTotal: x.price * x.qty })) };
 }
 
 function showUnpaidBill(items, person = null) {
@@ -169,8 +256,8 @@ showSavedBillPayment = function(billId) {
 
 makeTransaction = function(items, method, person = null, paymentDetails = {}) {
   const sum = totals(items), now = new Date(), orderId = state.orderIds[cartKey()] || ensureOrderId(), meta = state.orderMeta[cartKey()] || {};
-  if (sum.discountAmount) meta.discountUsed = Number(meta.discountUsed || 0) + sum.discountAmount;
-  return { id: nextDocumentId('INV', 'nextInvoiceNumber'), orderId, status: 'closed', date: businessDate(now), timestamp: now.toISOString(), time: now.toLocaleTimeString('id-ID', { hour: '2-digit', minute: '2-digit' }), payment: t(method), paymentCode: method, tendered: paymentDetails.tendered ?? null, change: paymentDetails.change ?? null, cashier: state.user.name, cashierId: state.user.id, shiftId: state.shift.id, shiftName: state.shift.name, waiter: meta.waiter || '—', table: state.orderType === 'dineIn' ? state.table : 'Takeaway', splitPerson: person, ...sum, lineItems: items.map(x => ({ productId: x.id, name: x.name, nameEn: x.en, category: x.category, qty: x.qty, price: x.price, taxable: x.taxable !== false, miscellaneous: Boolean(x.miscellaneous), lineTotal: x.price * x.qty })), items: items.map(x => `${x.qty}× ${x.name}`) };
+  if (sum.orderDiscountAmount) meta.discountUsed = Number(meta.discountUsed || 0) + sum.orderDiscountAmount;
+  return { id: nextDocumentId('INV', 'nextInvoiceNumber'), orderId, status: 'closed', date: businessDate(now), timestamp: now.toISOString(), time: now.toLocaleTimeString('id-ID', { hour: '2-digit', minute: '2-digit' }), payment: t(method), paymentCode: method, tendered: paymentDetails.tendered ?? null, change: paymentDetails.change ?? null, cashier: state.user.name, cashierId: state.user.id, shiftId: state.shift.id, shiftName: state.shift.name, waiter: meta.waiter || '—', table: state.orderType === 'dineIn' ? state.table : 'Takeaway', splitPerson: person, ...sum, lineItems: items.map(x => { const disc = calculateItemDiscount(x); return { productId: x.id, name: x.name, nameEn: x.en, category: x.category, qty: x.qty, price: x.price, taxable: x.taxable !== false, miscellaneous: Boolean(x.miscellaneous), itemDiscount: x.itemDiscount ? { ...x.itemDiscount } : null, discountAmount: disc, lineTotal: Math.max(0, x.price * x.qty - disc), rawLineTotal: x.price * x.qty }; }), items: items.map(x => `${x.qty}× ${x.name}`) };
 };
 
 function localizedReceiptItemName(item) {
@@ -182,7 +269,7 @@ receiptHTML = function(transaction, index = 0, copyType = 'customer') {
   const logo = state.settings.brandLogo ? `<img class="receipt-logo" src="${state.settings.brandLogo}" alt="Logo">` : '';
   const status = transaction.status === 'unpaid' ? 'UNPAID BILL / BELUM DIBAYAR' : transaction.status === 'void' ? 'VOID' : 'CLOSED BILL / LUNAS';
   const copy = copyType === 'restaurant' ? '<br>SALINAN RESTO / RESTAURANT COPY' : '';
-  return `<div class="receipt" data-receipt="${index}">${logo}<h2>${esc(state.settings.restaurantName)}</h2><p style="text-align:center"><strong>${status}</strong>${copy}<br>${esc(transaction.id)}<br>${esc(transaction.orderId)} · ${esc(transaction.time)}<br>${esc(transaction.table)}${transaction.splitPerson ? ` · Orang ${transaction.splitPerson}` : ''}<br>Waiter: ${esc(transaction.waiter || '—')}<br>Shift: ${esc(transaction.shiftName || transaction.shiftId || '—')}</p>${(transaction.lineItems || []).map(x => `<div class="receipt-line"><span>${x.qty}× ${esc(localizedReceiptItemName(x))}</span><span>${money(x.lineTotal)}</span></div>`).join('')}<div class="receipt-line receipt-total"><span>Subtotal</span><span>${money(transaction.subtotal || 0)}</span></div>${transaction.discountAmount ? `<div class="receipt-line"><span>${esc(transaction.discountLabel || 'Diskon')}</span><span>-${money(transaction.discountAmount)}</span></div>` : ''}<div class="receipt-line"><span>Dasar kena pajak</span><span>${money(transaction.taxableSubtotal || 0)}</span></div><div class="receipt-line"><span>${dynamicTaxLabel(transaction.taxRate ?? 10)}</span><span>${money(transaction.tax || 0)}</span></div><div class="receipt-line"><strong>Total</strong><strong>${money(transaction.total || 0)}</strong></div>${transaction.paymentCode === 'cash' && transaction.tendered !== null ? `<div class="receipt-line"><span>Uang tamu</span><span>${money(transaction.tendered)}</span></div><div class="receipt-line"><span>Kembalian</span><span>${money(transaction.change || 0)}</span></div>` : ''}<p style="text-align:center">${esc(transaction.payment || '')}<br>Kasir: ${esc(transaction.cashier || state.user.name)}<br><br>Terima kasih · Thank you</p></div>`;
+  return `<div class="receipt" data-receipt="${index}">${logo}<h2>${esc(state.settings.restaurantName)}</h2><p style="text-align:center"><strong>${status}</strong>${copy}<br>${esc(transaction.id)}<br>${esc(transaction.orderId)} · ${esc(transaction.time)}<br>${esc(transaction.table)}${transaction.splitPerson ? ` · Orang ${transaction.splitPerson}` : ''}<br>Waiter: ${esc(transaction.waiter || '—')}<br>Shift: ${esc(transaction.shiftName || transaction.shiftId || '—')}</p>${(transaction.lineItems || []).map(x => { const discLine = x.discountAmount ? `<div class="receipt-line receipt-item-discount"><span>&nbsp;&nbsp;↳ ${esc(x.itemDiscount?.label || 'Diskon item')}</span><span>-${money(x.discountAmount)}</span></div>` : ''; return `<div class="receipt-line"><span>${x.qty}× ${esc(localizedReceiptItemName(x))}</span><span>${money(x.lineTotal ?? (x.price * x.qty))}</span></div>${discLine}`; }).join('')}<div class="receipt-line receipt-total"><span>Subtotal</span><span>${money(transaction.subtotal || 0)}</span></div>${transaction.discountAmount ? `<div class="receipt-line"><span>${esc(transaction.discountLabel || 'Diskon')}</span><span>-${money(transaction.discountAmount)}</span></div>` : ''}<div class="receipt-line"><span>Dasar kena pajak</span><span>${money(transaction.taxableSubtotal || 0)}</span></div><div class="receipt-line"><span>${dynamicTaxLabel(transaction.taxRate ?? 10)}</span><span>${money(transaction.tax || 0)}</span></div><div class="receipt-line"><strong>Total</strong><strong>${money(transaction.total || 0)}</strong></div>${transaction.paymentCode === 'cash' && transaction.tendered !== null ? `<div class="receipt-line"><span>Uang tamu</span><span>${money(transaction.tendered)}</span></div><div class="receipt-line"><span>Kembalian</span><span>${money(transaction.change || 0)}</span></div>` : ''}<p style="text-align:center">${esc(transaction.payment || '')}<br>Kasir: ${esc(transaction.cashier || state.user.name)}<br><br>Terima kasih · Thank you</p></div>`;
 };
 
 function showCompletedTransactions(transactions, copyType = 'customer') {
@@ -401,6 +488,7 @@ const bindViewBeforeIdSearch = bindView;
 bindView = function() {
   bindViewBeforeIdSearch();
   const transactionInput = $('#transactionIdSearch'), shiftInput = $('#shiftIdSearch');
-  if (transactionInput) transactionInput.oninput = () => { transactionIdSearch = transactionInput.value; renderView(); const next = $('#transactionIdSearch'); next?.focus(); next?.setSelectionRange(next.value.length, next.value.length); };
-  if (shiftInput) shiftInput.oninput = () => { shiftIdSearch = shiftInput.value; renderView(); const next = $('#shiftIdSearch'); next?.focus(); next?.setSelectionRange(next.value.length, next.value.length); };
+  if (transactionInput && !window.desktop?.queryTransactions) transactionInput.oninput = () => { transactionIdSearch = transactionInput.value; renderView(); const next = $('#transactionIdSearch'); next?.focus(); next?.setSelectionRange(next.value.length, next.value.length); };
+  if (shiftInput && !window.desktop?.queryShifts) shiftInput.oninput = () => { shiftIdSearch = shiftInput.value; renderView(); const next = $('#shiftIdSearch'); next?.focus(); next?.setSelectionRange(next.value.length, next.value.length); };
 };
+
