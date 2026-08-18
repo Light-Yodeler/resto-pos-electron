@@ -1,6 +1,6 @@
 {
   "name": "anda-bungalows-pos",
-  "version": "1.14.0",
+  "version": "1.14.1",
   "description": "Offline desktop POS for Anda Bungalows & Restaurant",
   "main": "electron/main.cjs",
   "author": "Anda Bungalows & Restaurant",

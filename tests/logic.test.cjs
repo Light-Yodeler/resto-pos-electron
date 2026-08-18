@@ -62,7 +62,8 @@ test('unpaid and closed bills are distinct printable documents',()=>{const sourc
 test('cash tender supports exact payment, denominations, and change',()=>{const source=require('node:fs').readFileSync(require('node:path').join(__dirname,'..','app','enhancements.js'),'utf8');assert.match(source,/\[100, 200, 500, 1000, 2000, 5000, 10000, 20000, 50000, 100000\]/);assert.match(source,/data-cash-exact/);assert.match(source,/tendered - total/);assert.match(source,/Uang tamu/);assert.match(source,/Kembalian/)});
 test('orders require an active shift and an explicitly selected dine-in table',()=>{const source=require('node:fs').readFileSync(require('node:path').join(__dirname,'..','app','enhancements.js'),'utf8');assert.match(source,/if \(!state\.shift\?\.open\)/);assert.match(source,/explicitTableSelection/);assert.match(source,/Pilih meja terlebih dahulu/);assert.match(source,/orderContextReady\(\)/)});
 test('void keeps an audit reason and excludes transaction from sales',()=>{const source=require('node:fs').readFileSync(require('node:path').join(__dirname,'..','app','enhancements.js'),'utf8');assert.match(source,/state\.user\.role === 'cashier'/);assert.match(source,/transaction\.voidReason = reason/);assert.match(source,/transaction\.voidBy = state\.user\.name/);assert.match(source,/activeSalesTransactions/);assert.match(source,/status = 'void'/)});
-test('transaction detail and receipt retain shift identity',()=>{const source=require('node:fs').readFileSync(require('node:path').join(__dirname,'..','app','enhancements.js'),'utf8');assert.match(source,/shiftId: state\.shift\.id/);assert.match(source,/shiftName: state\.shift\.name/);assert.match(source,/Shift: \$\{esc\(transaction\.shiftName/);assert.match(source,/Kasir \/ shift/)});
+test('transaction detail retains shift identity while customer bill excludes shift',()=>{const source=require('node:fs').readFileSync(require('node:path').join(__dirname,'..','app','enhancements.js'),'utf8');assert.match(source,/shiftId: state\.shift\.id/);assert.match(source,/shiftName: state\.shift\.name/);assert.match(source,/Kasir \/ shift/);assert.equal(source.includes('Shift: ${esc(transaction.shiftName'),false)});
+
 test('miscellaneous cart item supports quantity, price, and tax choice',()=>{const source=require('node:fs').readFileSync(require('node:path').join(__dirname,'..','app','enhancements.js'),'utf8');assert.match(source,/showMiscellaneousForm/);assert.match(source,/miscellaneous: true/);assert.match(source,/name="taxable"/);assert.match(source,/name="price" type="number"/)});
 test('discount choices are configurable as percent or fixed amount',()=>{const source=require('node:fs').readFileSync(require('node:path').join(__dirname,'..','app','enhancements.js'),'utf8');assert.match(source,/discountOptions/);assert.match(source,/value="percent"/);assert.match(source,/value="fixed"/);assert.match(source,/discountUsed/);assert.match(source,/Diskon diterapkan sebelum pajak/)});
 test('menu-only backup uses a dedicated validated file format',()=>{const fs=require('node:fs'),path=require('node:path'),main=fs.readFileSync(path.join(__dirname,'..','electron','main.cjs'),'utf8'),preload=fs.readFileSync(path.join(__dirname,'..','electron','preload.cjs'),'utf8');assert.match(main,/ipcMain\.handle\('menu:backup'/);assert.match(main,/ipcMain\.handle\('menu:restore'/);assert.match(main,/anda-pos-menu/);assert.match(main,/\.andamenu/);assert.match(main,/validProducts/);assert.match(preload,/backupMenu/);assert.match(preload,/restoreMenu/)});
@@ -256,6 +257,41 @@ test('POS category switching preserves chips scroll position and updates active 
   assert.match(appJs, /prevScroll !== null/);
   assert.match(appJs, /nextChips\.scrollLeft = prevScroll/);
   assert.match(appJs, /selectPOSCategory\(b\.dataset\.cat\)/);
+});
+
+test('menu product form provides categorized icon dropdown picker without manual copy-paste', () => {
+  const fs = require('node:fs'), path = require('node:path');
+  const appJs = fs.readFileSync(path.join(__dirname, '..', 'app', 'app.js'), 'utf8');
+
+  // Verify categorized icon list and select picker
+  assert.match(appJs, /MENU_ICON_GROUPS/);
+  assert.match(appJs, /renderMenuIconOptions/);
+  assert.match(appJs, /<select name="icon">\$\{renderMenuIconOptions\(p\.icon\)\}<\/select>/);
+  assert.match(appJs, /Makanan Utama & Daging/);
+  assert.match(appJs, /Seafood & Ikan/);
+  assert.match(appJs, /Minuman & Jus/);
+  assert.match(appJs, /Penutup & Buah/);
+});
+
+test('high-legibility receipt font options provide distinct glyphs for digits 6, 8, and 9', () => {
+  const fs = require('node:fs'), path = require('node:path');
+  const mainJs = fs.readFileSync(path.join(__dirname, '..', 'electron', 'main.cjs'), 'utf8');
+  const uiJs = fs.readFileSync(path.join(__dirname, '..', 'app', 'ui-v2.js'), 'utf8');
+  const appJs = fs.readFileSync(path.join(__dirname, '..', 'app', 'app.js'), 'utf8');
+
+  // Verify thermalPrintCss supports distinct and sansClean styles with Segoe / Trebuchet / Tahoma
+  assert.match(mainJs, /case 'distinct':/);
+  assert.match(mainJs, /"Segoe UI", "Trebuchet MS"/);
+  assert.match(mainJs, /case 'sansClean':/);
+  assert.match(mainJs, /Tahoma, Verdana/);
+  assert.match(mainJs, /\['clear', 'medium', 'bold', 'distinct', 'sansClean'\]/);
+
+  // Verify UI and settings support distinct font options
+  assert.match(uiJs, /distinctFont:/);
+  assert.match(uiJs, /sansCleanFont:/);
+  assert.match(uiJs, /value="distinct"/);
+  assert.match(uiJs, /value="sansClean"/);
+  assert.match(appJs, /\['clear','medium','bold','distinct','sansClean'\]/);
 });
 
 

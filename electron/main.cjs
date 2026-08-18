@@ -349,11 +349,25 @@ function restoreNativeDatabase(sourcePath) {
   }
 }
 const thermalPrintCss = (contentWidth, fontStyle = 'clear') => {
-  const typography = fontStyle === 'bold'
-    ? { family: 'Arial, sans-serif', weight: 650, heading: 700, total: 700, size: 11.5 }
-    : fontStyle === 'medium'
-      ? { family: 'Arial, sans-serif', weight: 500, heading: 650, total: 650, size: 12 }
-      : { family: 'Consolas, "Courier New", monospace', weight: 400, heading: 700, total: 700, size: 12.5 };
+  let typography;
+  switch (fontStyle) {
+    case 'distinct':
+      typography = { family: '"Segoe UI", "Trebuchet MS", "Lucida Sans Unicode", "DejaVu Sans", sans-serif', weight: 600, heading: 700, total: 800, size: 12.5 };
+      break;
+    case 'sansClean':
+      typography = { family: 'Tahoma, Verdana, "Segoe UI", sans-serif', weight: 600, heading: 700, total: 800, size: 12 };
+      break;
+    case 'bold':
+      typography = { family: 'Arial, sans-serif', weight: 650, heading: 700, total: 700, size: 11.5 };
+      break;
+    case 'medium':
+      typography = { family: 'Arial, sans-serif', weight: 500, heading: 650, total: 650, size: 12 };
+      break;
+    case 'clear':
+    default:
+      typography = { family: 'Consolas, "Courier New", monospace', weight: 400, heading: 700, total: 700, size: 12.5 };
+      break;
+  }
   return `
   @page { margin: 0; }
   * { box-sizing: border-box; }
@@ -373,7 +387,8 @@ const thermalPrintCss = (contentWidth, fontStyle = 'clear') => {
 
 async function printThermalReceipt(options = {}) {
   const contentWidth = [64, 68, 72].includes(Number(options.contentWidth)) ? Number(options.contentWidth) : 64;
-  const fontStyle = ['clear', 'medium', 'bold'].includes(options.fontStyle) ? options.fontStyle : 'clear';
+  const fontStyle = ['clear', 'medium', 'bold', 'distinct', 'sansClean'].includes(options.fontStyle) ? options.fontStyle : 'clear';
+
   if (typeof options.html !== 'string' || !options.html.includes('receipt') || options.html.length > 6 * 1024 * 1024) {
     return { success: false, failureReason: 'Data struk tidak valid.' };
   }
