@@ -395,16 +395,149 @@ async function backupMenuOnly() {
   if (window.desktop?.backupMenu) { const result = await window.desktop.backupMenu(data); if (result?.success) toast('Backup menu berhasil disimpan.'); else if (!result?.canceled) toast(result?.error || 'Backup menu gagal.'); return; }
   const blob = new Blob([JSON.stringify({ format: 'anda-pos-menu', version: 1, ...data }, null, 2)], { type: 'application/json' }), url = URL.createObjectURL(blob), link = document.createElement('a'); link.href = url; link.download = `anda-pos-menu-${businessDate()}.andamenu`; link.click(); setTimeout(() => URL.revokeObjectURL(url), 1000);
 }
-async function restoreMenuOnly() {
-  if (!window.desktop?.restoreMenu) { toast('Restore menu tersedia pada aplikasi desktop.'); return; }
-  if (!confirm('Restore menu akan mengganti kategori dan seluruh menu saat ini. Lanjutkan?')) return;
-  const result = await window.desktop.restoreMenu();
-  if (result?.success) {
-    const categories = result.data.categories.map(x => String(x).trim()).filter(Boolean), products = result.data.products.filter(x => x && x.name && x.category && Number.isFinite(Number(x.price))).map((x, index) => ({ ...x, id: Number.isFinite(Number(x.id)) ? Number(x.id) : index + 1, price: Math.max(0, Number(x.price)), stock: Math.max(0, Number(x.stock) || 0), taxable: x.taxable !== false, unlimitedStock: Boolean(x.unlimitedStock), active: x.active !== false }));
-    if (!categories.length || !products.length) { toast('Backup menu tidak berisi kategori dan menu yang valid.'); return; }
-    state.categories = [...new Set(categories)]; state.products = products; await save(); render(); toast('Menu berhasil dipulihkan.');
-  } else if (!result?.canceled) toast(result?.error || 'Restore menu gagal.');
+function showRestoreDatabaseModal() {
+  const english = state.language === 'en';
+  if (state.user.role !== 'owner') {
+    toast(english ? 'Database restore is only permitted for the Owner.' : 'Restore database hanya dapat dilakukan oleh Owner.');
+    return;
+  }
+  const owner = state.users.find(user => user.id === state.user.id && user.role === 'owner' && user.active !== false);
+  if (!owner) {
+    toast(english ? 'Active Owner account not found.' : 'Akun Owner aktif tidak ditemukan.');
+    return;
+  }
+  openModal(`
+    <div class="reset-warning">
+      <span>⚠️</span>
+      <div>
+        <h2>${english ? 'Warning: Restore Full Database' : 'Peringatan: Restore Database Lengkap'}</h2>
+        <p>${english ? 'Restoring a database will PERMANENTLY REPLACE and DELETE all current active data (menus, stock, transactions, shift history, tables, and settings).' : 'Restore akan MENGGANTI & MENGHAPUS PERMANEN seluruh database yang sedang aktif saat ini (menu, stok, riwayat transaksi, sesi shift, meja, dan pengaturan).'}</p>
+      </div>
+    </div>
+    <div style="background:#fff8e6; border:1px solid #fde68a; border-radius:10px; padding:12px 14px; margin-bottom:14px; display:flex; justify-content:space-between; align-items:center; gap:10px;">
+      <div>
+        <strong style="color:#b45309; font-size:13px; display:block;">${english ? 'Need to back up current database first?' : 'Belum membuat backup database saat ini?'}</strong>
+        <span style="font-size:11px; color:#78350f;">${english ? 'It is strongly recommended to back up before restoring.' : 'Sangat disarankan untuk membuat backup sebelum restore.'}</span>
+      </div>
+      <button type="button" class="secondary mini" id="modalBackupDbBtn" style="white-space:nowrap;">⬇️ ${english ? 'Backup now' : 'Buat backup sekarang'}</button>
+    </div>
+    <form id="restoreDatabaseForm">
+      <label class="field">
+        <span>${english ? 'Current Owner PIN' : 'PIN Owner saat ini'}</span>
+        <input name="pin" type="password" inputmode="numeric" pattern="[0-9]{4,8}" required autocomplete="off" autofocus>
+      </label>
+      <label class="reset-confirm-check">
+        <input name="understood" type="checkbox" required>
+        <span>${english ? 'I understand that current database will be permanently overwritten by the selected backup file.' : 'Saya memahami bahwa database saat ini akan diganti permanen oleh file backup yang dipilih.'}</span>
+      </label>
+      <p class="form-error" id="restoreDatabaseError"></p>
+      <div class="modal-actions">
+        <button type="button" class="secondary close-modal">${english ? 'Cancel' : 'Batal'}</button>
+        <button class="danger">${english ? 'Proceed to select backup file…' : 'Lanjutkan pilih file backup…'}</button>
+      </div>
+    </form>
+  `);
+
+  const backupBtn = $('#modalBackupDbBtn');
+  if (backupBtn) backupBtn.onclick = () => backupDatabase();
+
+  $('#restoreDatabaseForm').onsubmit = async event => {
+    event.preventDefault();
+    const error = $('#restoreDatabaseError');
+    const pin = new FormData(event.target).get('pin');
+    const pinHash = await hashPin(pin);
+    if (pinHash !== owner.pinHash) {
+      error.textContent = english ? 'Incorrect Owner PIN.' : 'PIN Owner tidak sesuai.';
+      event.target.pin.select();
+      return;
+    }
+    if (!window.desktop?.restoreDatabase) {
+      error.textContent = english ? 'Restore is only available in the desktop application.' : 'Restore hanya tersedia pada aplikasi desktop.';
+      return;
+    }
+    closeModal();
+    const result = await window.desktop.restoreDatabase();
+    if (result?.success) {
+      toast(english ? 'Database restored successfully. Reloading…' : 'Database berhasil dipulihkan. Memuat ulang aplikasi…');
+      setTimeout(() => location.reload(), 600);
+    } else if (!result?.canceled) {
+      toast(result?.error || (english ? 'Database restore failed.' : 'Restore database gagal.'));
+    }
+  };
 }
+
+function showRestoreMenuModal() {
+  const english = state.language === 'en';
+  if (state.user.role !== 'owner') {
+    toast(english ? 'Menu restore is only permitted for the Owner.' : 'Restore menu hanya dapat dilakukan oleh Owner.');
+    return;
+  }
+  const owner = state.users.find(user => user.id === state.user.id && user.role === 'owner' && user.active !== false);
+  if (!owner) {
+    toast(english ? 'Active Owner account not found.' : 'Akun Owner aktif tidak ditemukan.');
+    return;
+  }
+  openModal(`
+    <div class="reset-warning">
+      <span>⚠️</span>
+      <div>
+        <h2>${english ? 'Warning: Restore Menu Catalogue' : 'Peringatan: Restore Katalog Menu'}</h2>
+        <p>${english ? 'Restoring the menu catalogue will replace all active menu categories, items, prices, and taxes.' : 'Restore menu akan mengganti seluruh kategori, menu, harga, dan pengaturan pajak yang aktif saat ini.'}</p>
+      </div>
+    </div>
+    <form id="restoreMenuForm">
+      <label class="field">
+        <span>${english ? 'Current Owner PIN' : 'PIN Owner saat ini'}</span>
+        <input name="pin" type="password" inputmode="numeric" pattern="[0-9]{4,8}" required autocomplete="off" autofocus>
+      </label>
+      <label class="reset-confirm-check">
+        <input name="understood" type="checkbox" required>
+        <span>${english ? 'I understand that current menu catalogue will be replaced.' : 'Saya memahami bahwa katalog menu saat ini akan diganti.'}</span>
+      </label>
+      <p class="form-error" id="restoreMenuError"></p>
+      <div class="modal-actions">
+        <button type="button" class="secondary close-modal">${english ? 'Cancel' : 'Batal'}</button>
+        <button class="primary">${english ? 'Proceed to select .andamenu file…' : 'Lanjutkan pilih file .andamenu…'}</button>
+      </div>
+    </form>
+  `);
+
+  $('#restoreMenuForm').onsubmit = async event => {
+    event.preventDefault();
+    const error = $('#restoreMenuError');
+    const pin = new FormData(event.target).get('pin');
+    const pinHash = await hashPin(pin);
+    if (pinHash !== owner.pinHash) {
+      error.textContent = english ? 'Incorrect Owner PIN.' : 'PIN Owner tidak sesuai.';
+      event.target.pin.select();
+      return;
+    }
+    if (!window.desktop?.restoreMenu) {
+      error.textContent = english ? 'Menu restore is only available in the desktop application.' : 'Restore menu hanya tersedia pada aplikasi desktop.';
+      return;
+    }
+    closeModal();
+    const result = await window.desktop.restoreMenu();
+    if (result?.success) {
+      const categories = result.data.categories.map(x => String(x).trim()).filter(Boolean),
+            products = result.data.products.filter(x => x && x.name && x.category && Number.isFinite(Number(x.price))).map((x, index) => ({ ...x, id: Number.isFinite(Number(x.id)) ? Number(x.id) : index + 1, price: Math.max(0, Number(x.price)), stock: Math.max(0, Number(x.stock) || 0), taxable: x.taxable !== false, unlimitedStock: Boolean(x.unlimitedStock), active: x.active !== false }));
+      if (!categories.length || !products.length) { toast(english ? 'Backup file does not contain valid categories or items.' : 'File backup tidak berisi kategori dan menu yang valid.'); return; }
+      state.categories = [...new Set(categories)];
+      state.products = products;
+      await save();
+      render();
+      toast(english ? 'Menu catalogue restored successfully.' : 'Katalog menu berhasil dipulihkan.');
+    } else if (!result?.canceled) {
+      toast(result?.error || (english ? 'Menu restore failed.' : 'Restore menu gagal.'));
+    }
+  };
+}
+
+async function restoreMenuOnly() {
+  showRestoreMenuModal();
+}
+
+restoreDatabase = showRestoreDatabaseModal;
 
 function showResetTransactions() {
   if (state.user.role !== 'owner') { toast(state.language === 'en' ? 'Only the Owner can reset transactions.' : 'Reset transaksi hanya dapat dilakukan Owner.'); return; }
@@ -441,9 +574,11 @@ document.addEventListener('click', async event => {
   if (editDiscount) showDiscountOptionForm(editDiscount.dataset.discountEdit);
   if (deleteDiscount && confirm('Hapus pilihan diskon ini?')) { state.settings.discountOptions = state.settings.discountOptions.filter(x => x.id !== deleteDiscount.dataset.discountDelete); await save(); render(); }
   if (event.target.closest('#backupMenu')) backupMenuOnly();
-  if (event.target.closest('#restoreMenu')) restoreMenuOnly();
+  if (event.target.closest('#restoreMenu')) showRestoreMenuModal();
+  if (event.target.closest('#restoreDatabase')) showRestoreDatabaseModal();
   if (event.target.closest('#resetTransactions')) showResetTransactions();
 });
+
 
 commercialDefaults();
 

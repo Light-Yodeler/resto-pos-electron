@@ -222,5 +222,42 @@ test('POS menu search searches across all categories regardless of active catego
   assert.equal(lemonResult[0].name, 'Ice Lemon Tea');
 });
 
+test('Restore database is Owner-protected with PIN verification and prominent permanent data loss warning', () => {
+  const fs = require('node:fs'), path = require('node:path');
+  const enhancements = fs.readFileSync(path.join(__dirname, '..', 'app', 'enhancements.js'), 'utf8');
+
+  // Verify Owner-only check
+  assert.match(enhancements, /function showRestoreDatabaseModal/);
+  assert.match(enhancements, /state\.user\.role !== 'owner'/);
+  assert.match(enhancements, /owner\.pinHash/);
+
+  // Verify warning copy and confirmation check
+  assert.match(enhancements, /Peringatan: Restore Database Lengkap/);
+  assert.match(enhancements, /Warning: Restore Full Database/);
+  assert.match(enhancements, /MENGGANTI & MENGHAPUS PERMANEN/);
+  assert.match(enhancements, /Sangat disarankan untuk membuat backup sebelum restore/);
+  assert.match(enhancements, /modalBackupDbBtn/);
+  assert.match(enhancements, /restoreDatabaseForm/);
+  assert.match(enhancements, /restoreDatabaseError/);
+
+  // Verify Menu Restore is also Owner-protected
+  assert.match(enhancements, /function showRestoreMenuModal/);
+  assert.match(enhancements, /restoreMenuForm/);
+  assert.match(enhancements, /restoreMenuError/);
+});
+
+test('POS category switching preserves chips scroll position and updates active category seamlessly', () => {
+  const fs = require('node:fs'), path = require('node:path');
+  const appJs = fs.readFileSync(path.join(__dirname, '..', 'app', 'app.js'), 'utf8');
+
+  // Verify selectPOSCategory and chips scroll preservation
+  assert.match(appJs, /function selectPOSCategory/);
+  assert.match(appJs, /btn\.classList\.toggle\('active',\s*btn\.dataset\.cat\s*===\s*catName\)/);
+  assert.match(appJs, /prevScroll !== null/);
+  assert.match(appJs, /nextChips\.scrollLeft = prevScroll/);
+  assert.match(appJs, /selectPOSCategory\(b\.dataset\.cat\)/);
+});
+
+
 
 
