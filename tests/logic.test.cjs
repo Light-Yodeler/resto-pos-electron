@@ -278,6 +278,8 @@ test('high-legibility receipt font options provide distinct glyphs for digits 6,
   const mainJs = fs.readFileSync(path.join(__dirname, '..', 'electron', 'main.cjs'), 'utf8');
   const uiJs = fs.readFileSync(path.join(__dirname, '..', 'app', 'ui-v2.js'), 'utf8');
   const appJs = fs.readFileSync(path.join(__dirname, '..', 'app', 'app.js'), 'utf8');
+  const enhJs = fs.readFileSync(path.join(__dirname, '..', 'app', 'enhancements.js'), 'utf8');
+  const css = fs.readFileSync(path.join(__dirname, '..', 'app', 'styles.css'), 'utf8');
 
   // Verify thermalPrintCss supports distinct and sansClean styles with Segoe / Trebuchet / Tahoma
   assert.match(mainJs, /case 'distinct':/);
@@ -286,13 +288,20 @@ test('high-legibility receipt font options provide distinct glyphs for digits 6,
   assert.match(mainJs, /Tahoma, Verdana/);
   assert.match(mainJs, /\['clear', 'medium', 'bold', 'distinct', 'sansClean'\]/);
 
-  // Verify UI and settings support distinct font options
+  // Verify printThermalReceipt routes non-clear fonts to graphics raster engine so TrueType fonts are printed
+  assert.match(mainJs, /directMode === 'escpos' && fontStyle === 'clear'/);
+
+  // Verify UI, receiptHTML, and CSS support dynamic receipt font
   assert.match(uiJs, /distinctFont:/);
   assert.match(uiJs, /sansCleanFont:/);
   assert.match(uiJs, /value="distinct"/);
   assert.match(uiJs, /value="sansClean"/);
   assert.match(appJs, /\['clear','medium','bold','distinct','sansClean'\]/);
+  assert.match(enhJs, /RECEIPT_FONT_FAMILIES/);
+  assert.match(enhJs, /applyReceiptFontToDOM/);
+  assert.match(css, /--receipt-font/);
 });
+
 
 
 

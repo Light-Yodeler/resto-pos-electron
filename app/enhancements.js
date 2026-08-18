@@ -265,12 +265,32 @@ function localizedReceiptItemName(item) {
   return item.nameEn || item.en || state.products.find(product => product.id === item.productId)?.en || item.name;
 }
 
+const RECEIPT_FONT_FAMILIES = {
+  distinct: '"Segoe UI", "Trebuchet MS", "Lucida Sans Unicode", "DejaVu Sans", sans-serif',
+  sansClean: 'Tahoma, Verdana, "Segoe UI", sans-serif',
+  bold: 'Arial, "Segoe UI", sans-serif',
+  medium: 'Arial, "Segoe UI", sans-serif',
+  clear: 'Consolas, "Courier New", monospace'
+};
+
+function getReceiptFontFamily(style) {
+  const s = style || state.settings?.receiptFontStyle || 'clear';
+  return RECEIPT_FONT_FAMILIES[s] || RECEIPT_FONT_FAMILIES.clear;
+}
+
+function applyReceiptFontToDOM() {
+  const fontFam = getReceiptFontFamily();
+  document.documentElement.style.setProperty('--receipt-font', fontFam);
+}
+
 receiptHTML = function(transaction, index = 0, copyType = 'customer') {
   const logo = state.settings.brandLogo ? `<img class="receipt-logo" src="${state.settings.brandLogo}" alt="Logo">` : '';
   const status = transaction.status === 'unpaid' ? 'UNPAID BILL / BELUM DIBAYAR' : transaction.status === 'void' ? 'VOID' : 'CLOSED BILL / LUNAS';
   const copy = copyType === 'restaurant' ? '<br>SALINAN RESTO / RESTAURANT COPY' : '';
-  return `<div class="receipt" data-receipt="${index}">${logo}<h2>${esc(state.settings.restaurantName)}</h2><p style="text-align:center"><strong>${status}</strong>${copy}<br>${esc(transaction.id)}<br>${esc(transaction.orderId)} · ${esc(transaction.time)}<br>${esc(transaction.table)}${transaction.splitPerson ? ` · Orang ${transaction.splitPerson}` : ''}<br>Waiter: ${esc(transaction.waiter || '—')}</p>${(transaction.lineItems || []).map(x => { const discLine = x.discountAmount ? `<div class="receipt-line receipt-item-discount"><span>&nbsp;&nbsp;↳ ${esc(x.itemDiscount?.label || 'Diskon item')}</span><span>-${money(x.discountAmount)}</span></div>` : ''; return `<div class="receipt-line"><span>${x.qty}× ${esc(localizedReceiptItemName(x))}</span><span>${money(x.lineTotal ?? (x.price * x.qty))}</span></div>${discLine}`; }).join('')}<div class="receipt-line receipt-total"><span>Subtotal</span><span>${money(transaction.subtotal || 0)}</span></div>${transaction.discountAmount ? `<div class="receipt-line"><span>${esc(transaction.discountLabel || 'Diskon')}</span><span>-${money(transaction.discountAmount)}</span></div>` : ''}<div class="receipt-line"><span>Dasar kena pajak</span><span>${money(transaction.taxableSubtotal || 0)}</span></div><div class="receipt-line"><span>${dynamicTaxLabel(transaction.taxRate ?? 10)}</span><span>${money(transaction.tax || 0)}</span></div><div class="receipt-line"><strong>Total</strong><strong>${money(transaction.total || 0)}</strong></div>${transaction.paymentCode === 'cash' && transaction.tendered !== null ? `<div class="receipt-line"><span>Uang tamu</span><span>${money(transaction.tendered)}</span></div><div class="receipt-line"><span>Kembalian</span><span>${money(transaction.change || 0)}</span></div>` : ''}<p style="text-align:center">${esc(transaction.payment || '')}<br>Kasir: ${esc(transaction.cashier || state.user.name)}<br><br>Terima kasih · Thank you</p></div>`;
+  const fontFam = getReceiptFontFamily();
+  return `<div class="receipt" data-receipt="${index}" style="font-family: ${fontFam}">${logo}<h2>${esc(state.settings.restaurantName)}</h2><p style="text-align:center"><strong>${status}</strong>${copy}<br>${esc(transaction.id)}<br>${esc(transaction.orderId)} · ${esc(transaction.time)}<br>${esc(transaction.table)}${transaction.splitPerson ? ` · Orang ${transaction.splitPerson}` : ''}<br>Waiter: ${esc(transaction.waiter || '—')}</p>${(transaction.lineItems || []).map(x => { const discLine = x.discountAmount ? `<div class="receipt-line receipt-item-discount"><span>&nbsp;&nbsp;↳ ${esc(x.itemDiscount?.label || 'Diskon item')}</span><span>-${money(x.discountAmount)}</span></div>` : ''; return `<div class="receipt-line"><span>${x.qty}× ${esc(localizedReceiptItemName(x))}</span><span>${money(x.lineTotal ?? (x.price * x.qty))}</span></div>${discLine}`; }).join('')}<div class="receipt-line receipt-total"><span>Subtotal</span><span>${money(transaction.subtotal || 0)}</span></div>${transaction.discountAmount ? `<div class="receipt-line"><span>${esc(transaction.discountLabel || 'Diskon')}</span><span>-${money(transaction.discountAmount)}</span></div>` : ''}<div class="receipt-line"><span>Dasar kena pajak</span><span>${money(transaction.taxableSubtotal || 0)}</span></div><div class="receipt-line"><span>${dynamicTaxLabel(transaction.taxRate ?? 10)}</span><span>${money(transaction.tax || 0)}</span></div><div class="receipt-line"><strong>Total</strong><strong>${money(transaction.total || 0)}</strong></div>${transaction.paymentCode === 'cash' && transaction.tendered !== null ? `<div class="receipt-line"><span>Uang tamu</span><span>${money(transaction.tendered)}</span></div><div class="receipt-line"><span>Kembalian</span><span>${money(transaction.change || 0)}</span></div>` : ''}<p style="text-align:center">${esc(transaction.payment || '')}<br>Kasir: ${esc(transaction.cashier || state.user.name)}<br><br>Terima kasih · Thank you</p></div>`;
 };
+
 
 
 function showCompletedTransactions(transactions, copyType = 'customer') {
@@ -389,7 +409,9 @@ const baseShowProductForm = showProductForm;
 showProductForm = function(id) { baseShowProductForm(id); const taxCheck = [...document.querySelectorAll('#productForm .check')].find(label => label.textContent.includes('Kenakan pajak')); if (taxCheck?.lastChild) taxCheck.lastChild.textContent = ` Kenakan ${dynamicTaxLabel()}`; };
 showTestReceipt = function() { const now = new Date(), rate = currentTaxRate(), taxableSubtotal = 100000, tax = Math.round(taxableSubtotal * rate / 100), sample = { id: 'TEST-80MM', orderId: 'ORD-TEST', status: 'closed', time: now.toLocaleTimeString('id-ID', { hour: '2-digit', minute: '2-digit' }), table: state.language === 'en' ? 'Test Table' : 'Meja Uji', waiter: state.language === 'en' ? 'Waiter Name' : 'Nama Waiter', cashier: state.user.name, shiftId: state.shift.id || 'SFT-TEST', shiftName: state.shift.name || 'Shift Uji', payment: 'TEST PRINT', subtotal: 150000, discountAmount: 0, taxableSubtotal, taxRate: rate, tax, total: 150000 + tax, lineItems: [{ qty: 1, name: 'Nasi Goreng Spesial', nameEn: 'Special Fried Rice', taxable: true, lineTotal: 100000 }, { qty: 1, name: 'Minuman Tanpa Pajak', nameEn: 'Tax-exempt Drink', taxable: false, lineTotal: 50000 }] }; openModal(`${receiptHTML(sample)}<div class="modal-actions receipt-actions"><button class="secondary close-modal">${state.language === 'en' ? 'Close' : 'Tutup'}</button><button class="primary" id="printReceipt">${state.language === 'en' ? 'Print 80 mm test' : 'Cetak uji 80 mm'}</button></div>`); $('#printReceipt').onclick = () => printReceipt(); };
 const baseSaveOperationalSettings = saveOperationalSettings;
-saveOperationalSettings = async function(form) { const rate = Number(new FormData(form).get('taxRate')); state.settings.taxRate = Number.isFinite(rate) ? Math.max(0, Math.min(100, rate)) : 10; await baseSaveOperationalSettings(form); };
+saveOperationalSettings = async function(form) { const rate = Number(new FormData(form).get('taxRate')); state.settings.taxRate = Number.isFinite(rate) ? Math.max(0, Math.min(100, rate)) : 10; await baseSaveOperationalSettings(form); applyReceiptFontToDOM(); };
+applyReceiptFontToDOM();
+
 
 async function backupMenuOnly() {
   const data = { categories: state.categories, products: state.products };

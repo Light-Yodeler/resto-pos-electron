@@ -394,10 +394,14 @@ async function printThermalReceipt(options = {}) {
   }
   const direct = Boolean(options.silent && options.deviceName);
   const directMode = options.directMode === 'graphics' ? 'graphics' : 'escpos';
-  if (direct && process.platform === 'win32' && directMode === 'escpos') {
+  // Use native ESC/POS text mode ONLY when directMode is 'escpos' AND fontStyle is 'clear'.
+  // When a distinct graphical TrueType font is chosen ('distinct', 'sansClean', 'medium', 'bold') or directMode is 'graphics',
+  // route to the graphics raster engine so Windows renders the font glyphs (open 6, 8, 9) accurately onto paper!
+  if (direct && process.platform === 'win32' && directMode === 'escpos' && fontStyle === 'clear') {
     return await printWindowsEscPos(options.deviceName, options.nativeReceipt, fontStyle, options.nativeColumns, options.autoCut !== false, options.cutFeedLines);
   }
   const printWindow = new BrowserWindow({
+
     show: direct, x: direct ? -10000 : undefined, y: direct ? -10000 : undefined,
     width: 420, height: 800, backgroundColor: '#ffffff', skipTaskbar: true,
     webPreferences: { contextIsolation: true, nodeIntegration: false, sandbox: true, backgroundThrottling: false }
