@@ -288,8 +288,11 @@ test('high-legibility receipt font options provide distinct glyphs for digits 6,
   assert.match(mainJs, /Tahoma, Verdana/);
   assert.match(mainJs, /\['clear', 'medium', 'bold', 'distinct', 'sansClean'\]/);
 
-  // Verify printThermalReceipt routes non-clear fonts to graphics raster engine so TrueType fonts are printed
-  assert.match(mainJs, /directMode === 'escpos' && fontStyle === 'clear'/);
+  // Verify printThermalReceipt routes ESC/POS directly to native hardware text engine
+  assert.match(mainJs, /direct && process.platform === 'win32' && directMode === 'escpos'/);
+  assert.match(mainJs, /command\(0x1b, 0x4d, 1\)/);
+  assert.match(mainJs, /setCharSpacing\(2\)/);
+
 
   // Verify UI, receiptHTML, and CSS support dynamic receipt font
   assert.match(uiJs, /distinctFont:/);

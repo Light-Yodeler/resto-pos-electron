@@ -85,10 +85,30 @@ function buildEscPosReceipt(receipt, fontStyle = 'clear', requestedColumns = 42,
   const line = value => chunks.push(Buffer.from(`${asciiText(value).slice(0, columns)}\n`, 'ascii'));
   const centered = value => wrapReceiptText(value, columns).forEach(text => line(text));
   const setBold = enabled => command(0x1b, 0x45, enabled ? 1 : 0);
+  const setCharSpacing = dots => command(0x1b, 0x20, Math.max(0, Math.min(10, dots)));
+
   command(0x1b, 0x40); // Initialize printer.
-  command(0x1b, 0x4d, 0); // Font A; 42 columns is the safe default for generic 80 mm printers.
+
+  // ESC/POS native hardware font selection:
+  // - 'distinct' / 'sansClean': Select Font B (9x17 single-dot matrix). The strokes are thin and open,
+  //   leaving large open loops in 6 and 9 so they are unmistakably distinct from 8 on thermal paper!
+  // - 'medium': Select Font A (12x24) with 1-dot character spacing for clean digit separation.
+  // - 'bold': Select Font A with bold emphasis.
+  // - 'clear' (default): Select Font A (12x24) standard monospace.
+  if (fontStyle === 'distinct' || fontStyle === 'sansClean') {
+    command(0x1b, 0x4d, 1); // Font B (9x17 dots, slim, open loops for 6 and 9)
+    setCharSpacing(2); // 2 dots character spacing so numbers like 689 never bleed into each other
+  } else if (fontStyle === 'medium') {
+    command(0x1b, 0x4d, 0); // Font A (12x24 dots)
+    setCharSpacing(1); // 1 dot character spacing
+  } else {
+    command(0x1b, 0x4d, 0); // Font A; 42 columns is the safe default for generic 80 mm printers.
+    setCharSpacing(0);
+  }
+
+
   command(0x1b, 0x32); // Default line spacing.
-  command(0x1b, 0x61, 1);
+  command(0x1b, 0x61, 1); // Center alignment.
   const logo = receiptLogoBytes(receipt.logo);
   if (logo.length) chunks.push(logo);
   setBold(true);
@@ -96,7 +116,7 @@ function buildEscPosReceipt(receipt, fontStyle = 'clear', requestedColumns = 42,
   setBold(false);
   for (const meta of (receipt.meta || []).slice(0, 12)) centered(meta);
   line('');
-  command(0x1b, 0x61, 0);
+  command(0x1b, 0x61, 0); // Left alignment.
   const baseBold = fontStyle === 'bold';
   for (const row of receipt.rows.slice(0, 500)) {
     if (row.sectionStart) line('-'.repeat(columns));
@@ -107,16 +127,18 @@ function buildEscPosReceipt(receipt, fontStyle = 'clear', requestedColumns = 42,
   }
   for (const note of (receipt.notes || []).slice(0, 8)) line(note);
   line('');
-  command(0x1b, 0x61, 1);
+  command(0x1b, 0x61, 1); // Center alignment.
   for (const footer of (receipt.footer || []).slice(0, 12)) centered(footer);
   command(0x1b, 0x61, 0);
   setBold(false);
+  setCharSpacing(0);
   command(0x1b, 0x64, feedLines); // Feed beyond the physical cutter before cutting.
   if (autoCut) command(0x1d, 0x56, 0x01); // Standard ESC/POS partial cut.
   return Buffer.concat(chunks);
 }
 
 async function printWindowsEscPos(printerName, receipt, fontStyle, columns, autoCut, cutFeedLines) {
+
   const jobId = `${process.pid}-${Date.now()}`;
   const temporaryData = path.join(os.tmpdir(), `anda-pos-receipt-${jobId}.bin`);
   const packagedScript = path.join(__dirname, 'print-escpos-windows.ps1');
@@ -394,13 +416,14 @@ async function printThermalReceipt(options = {}) {
   }
   const direct = Boolean(options.silent && options.deviceName);
   const directMode = options.directMode === 'graphics' ? 'graphics' : 'escpos';
-  // Use native ESC/POS text mode ONLY when directMode is 'escpos' AND fontStyle is 'clear'.
-  // When a distinct graphical TrueType font is chosen ('distinct', 'sansClean', 'medium', 'bold') or directMode is 'graphics',
-  // route to the graphics raster engine so Windows renders the font glyphs (open 6, 8, 9) accurately onto paper!
-  if (direct && process.platform === 'win32' && directMode === 'escpos' && fontStyle === 'clear') {
+  // When in ESC/POS mode (the recommended default), print via native ESC/POS hardware text engine
+  // which produces 100% razor-sharp, dark, high-contrast thermal text with zero blurriness.
+  // The fontStyle ('distinct', 'medium', 'clear', 'bold') is rendered using hardware Font A/B & character spacing.
+  if (direct && process.platform === 'win32' && directMode === 'escpos') {
     return await printWindowsEscPos(options.deviceName, options.nativeReceipt, fontStyle, options.nativeColumns, options.autoCut !== false, options.cutFeedLines);
   }
   const printWindow = new BrowserWindow({
+
 
     show: direct, x: direct ? -10000 : undefined, y: direct ? -10000 : undefined,
     width: 420, height: 800, backgroundColor: '#ffffff', skipTaskbar: true,
