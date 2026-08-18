@@ -185,4 +185,42 @@ test('Header provides a dedicated logout button with confirmation dialog that lo
   assert.match(jsSource, /#logoutBtn/);
 });
 
+test('POS menu search searches across all categories regardless of active category filter', () => {
+  const products = [
+    { id: 1, name: 'Steak Tenderloin', en: 'Tenderloin Steak', category: 'European Corner', price: 120000, active: true },
+    { id: 2, name: 'Ice Lemon Tea', en: 'Ice Lemon Tea', category: 'Tea', price: 20000, active: true },
+    { id: 3, name: 'Bebalung Lombok', en: 'Beef Ribs Soup', category: 'Sasak Traditional', price: 68000, active: true }
+  ];
+
+  const filterPOS = (cat, searchStr) => {
+    const q = searchStr.trim().toLowerCase();
+    return products.filter(p => {
+      if (p.active === false) return false;
+      if (q) {
+        const matchName = (p.name || '').toLowerCase().includes(q);
+        const matchEn = (p.en || '').toLowerCase().includes(q);
+        const matchCat = (p.category || '').toLowerCase().includes(q);
+        const matchPrice = String(p.price || '').includes(q);
+        return matchName || matchEn || matchCat || matchPrice;
+      }
+      return cat === 'Semua' || p.category === cat;
+    });
+  };
+
+  // When browsing 'Tea' without search, only Tea is shown
+  assert.equal(filterPOS('Tea', '').length, 1);
+  assert.equal(filterPOS('Tea', '')[0].name, 'Ice Lemon Tea');
+
+  // When active category is 'Tea', but search query is 'Steak', it finds the Steak from European Corner!
+  const steakResult = filterPOS('Tea', 'Steak');
+  assert.equal(steakResult.length, 1);
+  assert.equal(steakResult[0].name, 'Steak Tenderloin');
+
+  // When active category is 'European Corner', but search query is 'lemon', it finds Ice Lemon Tea!
+  const lemonResult = filterPOS('European Corner', 'lemon');
+  assert.equal(lemonResult.length, 1);
+  assert.equal(lemonResult[0].name, 'Ice Lemon Tea');
+});
+
+
 
