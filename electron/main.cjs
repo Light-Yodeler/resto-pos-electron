@@ -485,18 +485,22 @@ async function printThermalReceipt(options = {}) {
     return await printWindowsEscPos(options.deviceName, options.nativeReceipt, fontStyle, options.nativeColumns, options.autoCut !== false, options.cutFeedLines);
   }
 
-  // Mode 2: Floreant POS Document Driver Vector Architecture
-  // Uses a temp HTML file + loadFile() so Chromium fully renders TrueType fonts before printing.
-  // data: URI with sandbox:true caused blank pages because CSS was not applied in hidden windows.
+  // Mode 2 (direct, Windows): Chromium renders TrueType HTML → capturePage → ESC/POS raster
+  // webContents.print fails on thermal printers that only have RAW/ESC/POS drivers (no GDI/XPS).
+  // Solution: use the same RAW spooler path that works for hardware text mode, but feed it
+  // a raster image captured from Chromium's TrueType-rendered output.
+  //
+  // Mode 3 (dialog, non-direct): webContents.print with silent:false shows the OS print dialog.
+
+  // Render width: 80mm paper body in Chromium (96 DPI = 3.7795px/mm → 80mm ≈ 302px)
+  const windowW = Math.round(80 * 3.7795);
+
   const tempHtmlPath = path.join(os.tmpdir(), `anda-pos-receipt-${Date.now()}.html`);
   const printWindow = new BrowserWindow({
-    // Position off-screen instead of show:false so Chromium actually renders the layout.
-    // show:false causes Chromium to skip paint/layout passes → blank output on thermal printers.
-    x: -2000,
-    y: 0,
+    x: -2000, y: 0,        // off-screen but show:true so Chromium renders layout & fonts
     show: true,
-    width: 320,
-    height: 1200,
+    width: windowW,
+    height: 2000,
     frame: false,
     transparent: false,
     backgroundColor: '#ffffff',
@@ -506,8 +510,7 @@ async function printThermalReceipt(options = {}) {
     webPreferences: {
       contextIsolation: true,
       nodeIntegration: false,
-      // sandbox: false required so system fonts (Segoe UI, Tahoma) resolve from Windows font dir
-      sandbox: false,
+      sandbox: false,         // sandbox:false required so Segoe UI / Tahoma load from Windows fonts dir
       backgroundThrottling: false
     }
   });
@@ -517,37 +520,84 @@ async function printThermalReceipt(options = {}) {
     fs.writeFileSync(tempHtmlPath, documentHtml, 'utf8');
     await printWindow.loadFile(tempHtmlPath);
 
-    // Wait for fonts + images + layout paint to complete
+    // Wait for fonts, images, and layout pass to fully complete
     await printWindow.webContents.executeJavaScript(`(async () => {
       await document.fonts.ready;
       await Promise.all([...document.images].map(img =>
         img.complete ? Promise.resolve() :
         new Promise(resolve => { img.onload = img.onerror = resolve; })
       ));
-      // Force a synchronous layout pass so Chromium flushes the render tree
       void document.body.getBoundingClientRect();
       return true;
     })()`);
+    await new Promise(resolve => setTimeout(resolve, 400));
 
-    // Give the compositor an extra frame to finish painting before sending to spooler
-    await new Promise(resolve => setTimeout(resolve, direct ? 800 : 400));
+    if (direct && process.platform === 'win32') {
+      // ── Mode 2: capturePage → 1-bit dither → ESC/POS RAW spooler ──
+      const captured = await printWindow.webContents.capturePage();
+      const { width: imgW, height: imgH } = captured.getSize();
+      const bgraPixels = captured.toBitmap();
 
-    return await new Promise(resolve => {
-      const printOptions = {
-        silent: direct,
-        deviceName: options.deviceName || undefined,
-        printBackground: true,
-        color: false,
-        margins: { marginType: 'none' },
-        landscape: false,
-        pagesPerSheet: 1,
-        collate: false
-      };
+      // Printer: 203 DPI = ~8 dots/mm. Map contentWidth mm to printer dots.
+      const printWidthDots = Math.round(contentWidth * 8);
+      const printHeightDots = Math.min(imgH, 3000);
+      const scaleX = imgW / printWidthDots;
 
-      printWindow.webContents.print(printOptions, (success, failureReason) => {
-        setTimeout(() => resolve({ success, failureReason }), direct ? 3000 : 1000);
+      const autoCutFlag = options.autoCut !== false;
+      const feedLines = [6, 8, 10].includes(Number(options.cutFeedLines)) ? Number(options.cutFeedLines) : 8;
+      const bytesPerRow = Math.ceil(printWidthDots / 8);
+      const CHUNK_ROWS = 255; // max safe rows per single GS v 0 command
+
+      const parts = [
+        Buffer.from([0x1b, 0x40]),       // ESC @ initialize
+        Buffer.from([0x1b, 0x4c, 0x00, 0x00]) // left margin = 0
+      ];
+
+      for (let rowStart = 0; rowStart < printHeightDots; rowStart += CHUNK_ROWS) {
+        const rowEnd = Math.min(rowStart + CHUNK_ROWS, printHeightDots);
+        const numRows = rowEnd - rowStart;
+        const xL = bytesPerRow & 0xff;
+        const xH = (bytesPerRow >> 8) & 0xff;
+        const yL = numRows & 0xff;
+        const yH = (numRows >> 8) & 0xff;
+        parts.push(Buffer.from([0x1d, 0x76, 0x30, 0x00, xL, xH, yL, yH]));
+        const chunkBuf = Buffer.alloc(bytesPerRow * numRows, 0);
+        for (let r = 0; r < numRows; r++) {
+          const y = rowStart + r;
+          if (y >= imgH) break;
+          for (let dotX = 0; dotX < printWidthDots; dotX++) {
+            const srcX = Math.min(Math.round(dotX * scaleX), imgW - 1);
+            const idx = (y * imgW + srcX) * 4;
+            // toBitmap() returns BGRA (not RGBA)
+            const lum = 0.299 * bgraPixels[idx + 2] + 0.587 * bgraPixels[idx + 1] + 0.114 * bgraPixels[idx];
+            if (lum < 148) chunkBuf[r * bytesPerRow + Math.floor(dotX / 8)] |= (0x80 >> (dotX % 8));
+          }
+        }
+        parts.push(chunkBuf);
+      }
+
+      parts.push(Buffer.from([0x1b, 0x64, feedLines]));
+      if (autoCutFlag) parts.push(Buffer.from([0x1d, 0x56, 0x01]));
+
+      return await printWindowsEscPosBuffer(options.deviceName, Buffer.concat(parts));
+
+    } else {
+      // ── Mode 3: webContents.print with OS dialog (non-direct) ──
+      await new Promise(resolve => setTimeout(resolve, 200));
+      return await new Promise(resolve => {
+        printWindow.webContents.print({
+          silent: false,
+          printBackground: true,
+          color: false,
+          margins: { marginType: 'none' },
+          landscape: false,
+          pagesPerSheet: 1,
+          collate: false
+        }, (success, failureReason) => {
+          setTimeout(() => resolve({ success, failureReason }), 1000);
+        });
       });
-    });
+    }
   } catch (error) {
     return { success: false, failureReason: error.message };
   } finally {
