@@ -431,48 +431,47 @@ function restoreNativeDatabase(sourcePath) {
     throw error;
   }
 }
-const thermalPrintCss = (contentWidthMm = 64, fontStyle = 'distinct') => {
+const thermalPrintCss = (contentWidthMm = 68, fontStyle = 'distinct') => {
   let typography;
   switch (fontStyle) {
     case 'distinct':
-      typography = { family: '"Segoe UI", "Trebuchet MS", "Lucida Sans Unicode", "DejaVu Sans", Arial, sans-serif', weight: 600, heading: 700, total: 800, size: 21 };
+      typography = { family: '"Segoe UI", "Trebuchet MS", "Lucida Sans Unicode", "DejaVu Sans", Arial, sans-serif', weight: 600, heading: 700, total: 800, size: 13 };
       break;
     case 'sansClean':
-      typography = { family: 'Tahoma, Verdana, "Segoe UI", Arial, sans-serif', weight: 600, heading: 700, total: 800, size: 20 };
+      typography = { family: 'Tahoma, Verdana, "Segoe UI", Arial, sans-serif', weight: 600, heading: 700, total: 800, size: 12.5 };
       break;
     case 'bold':
-      typography = { family: 'Arial, "Segoe UI", sans-serif', weight: 700, heading: 800, total: 800, size: 20 };
+      typography = { family: 'Arial, "Segoe UI", sans-serif', weight: 700, heading: 800, total: 800, size: 12.5 };
       break;
     case 'medium':
-      typography = { family: 'Arial, "Segoe UI", sans-serif', weight: 500, heading: 700, total: 700, size: 21 };
+      typography = { family: 'Arial, "Segoe UI", sans-serif', weight: 500, heading: 700, total: 700, size: 13 };
       break;
     case 'clear':
     default:
-      typography = { family: 'Consolas, "Courier New", monospace', weight: 600, heading: 700, total: 700, size: 21 };
+      typography = { family: 'Consolas, "Courier New", monospace', weight: 600, heading: 700, total: 700, size: 13 };
       break;
-
   }
-  const widthDots = Math.min(576, Math.max(460, Math.round(contentWidthMm * 8)));
+  const contentWidth = [64, 68, 72].includes(Number(contentWidthMm)) ? Number(contentWidthMm) : 68;
   return `
-  @page { margin: 0; }
-  * { box-sizing: border-box; }
-  html, body { width: 576px; margin: 0; padding: 0; background: #fff; color: #000; -webkit-font-smoothing: antialiased; text-rendering: geometricPrecision; }
-  body { font: ${typography.weight} ${typography.size}px/1.38 ${typography.family}; }
-  .receipt { width: ${widthDots}px; margin: 0 auto; padding: 15px 0 25px; overflow: hidden; font-family: ${typography.family}; }
-  .receipt-logo { display: block; width: 180px; height: 130px; object-fit: contain; margin: 0 auto 12px; }
-  .receipt h2 { max-width: 100%; margin: 0 0 12px; text-align: center; font: ${typography.heading} 26px/1.2 ${typography.family}; overflow-wrap: anywhere; }
-  .receipt p { margin: 10px 0; overflow-wrap: anywhere; font-weight: ${typography.weight}; font-size: ${typography.size}px; font-family: ${typography.family}; }
-  .receipt-line { display: grid; grid-template-columns: minmax(0, 1fr) max-content; align-items: start; gap: 12px; margin: 8px 0; font-family: ${typography.family}; font-size: ${typography.size}px; }
+  @page { size: 80mm auto; margin: 0; }
+  * { box-sizing: border-box; -webkit-print-color-adjust: exact; print-color-adjust: exact; }
+  html, body { width: 80mm; margin: 0; padding: 0; background: #fff; color: #000; font-family: ${typography.family}; }
+  body { font: ${typography.weight} ${typography.size}px/1.35 ${typography.family}; }
+  .receipt { width: ${contentWidth}mm; margin: 0 auto; padding: 3mm 0 6mm; overflow: hidden; font-family: ${typography.family}; }
+  .receipt-logo { display: block; width: 26mm; height: 18mm; object-fit: contain; margin: 0 auto 2mm; }
+  .receipt h2 { max-width: 100%; margin: 0 0 2mm; text-align: center; font: ${typography.heading} 16px/1.2 ${typography.family}; overflow-wrap: anywhere; }
+  .receipt p { margin: 1.5mm 0; overflow-wrap: anywhere; font-weight: ${typography.weight}; font-size: ${typography.size}px; font-family: ${typography.family}; }
+  .receipt-line { display: grid; grid-template-columns: minmax(0, 1fr) max-content; align-items: start; gap: 2mm; margin: 1.6mm 0; font-family: ${typography.family}; font-size: ${typography.size}px; }
   .receipt-line > span:first-child, .receipt-line > strong:first-child { min-width: 0; overflow-wrap: anywhere; }
   .receipt-line > span:last-child, .receipt-line > strong:last-child { white-space: nowrap; text-align: right; }
   .receipt-line { font-weight: ${typography.weight}; }
-  .receipt-total { border-top: 2px dashed #000; margin-top: 14px; padding-top: 14px; font-weight: ${typography.total}; font-size: ${typography.size + 2}px; }
-  .receipt-item-discount { font-size: ${typography.size - 3}px; margin-top: -4px; padding-left: 14px; }
+  .receipt-total { border-top: 1.5px dashed #000; margin-top: 2.5mm; padding-top: 2.5mm; font-weight: ${typography.total}; font-size: ${typography.size + 1}px; }
+  .receipt-item-discount { font-size: ${typography.size - 2}px; margin-top: -1mm; padding-left: 2mm; }
 `;
 };
 
 async function printThermalReceipt(options = {}) {
-  const contentWidth = [64, 68, 72].includes(Number(options.contentWidth)) ? Number(options.contentWidth) : 64;
+  const contentWidth = [64, 68, 72].includes(Number(options.contentWidth)) ? Number(options.contentWidth) : 68;
   const fontStyle = ['clear', 'medium', 'bold', 'distinct', 'sansClean'].includes(options.fontStyle) ? options.fontStyle : 'distinct';
 
   if (typeof options.html !== 'string' || !options.html.includes('receipt') || options.html.length > 6 * 1024 * 1024) {
@@ -486,35 +485,49 @@ async function printThermalReceipt(options = {}) {
     return await printWindowsEscPos(options.deviceName, options.nativeReceipt, fontStyle, options.nativeColumns, options.autoCut !== false, options.cutFeedLines);
   }
 
-  // Mode 2: High-Resolution 1:1 ESC/POS TrueType Raster Rendering (For distinct, sansClean, medium, bold, or graphics mode)
-  // Renders the TrueType font at the exact 576-dot physical thermal head width and sends 1-bit bitmap to the printer!
+  // Mode 2: Floreant POS Document Driver Vector Architecture
+  // Direct document vector printing via Chromium Skia to the Windows Print Spooler / Driver.
+  // Eliminates printer buffer wrapping and line overlapping while rendering ultra-sharp TrueType fonts.
   const printWindow = new BrowserWindow({
-    show: false, width: 576, height: 1200, backgroundColor: '#ffffff', skipTaskbar: true,
-    webPreferences: { contextIsolation: true, nodeIntegration: false, sandbox: true, backgroundThrottling: false }
+    show: false,
+    width: 400,
+    height: 900,
+    backgroundColor: '#ffffff',
+    skipTaskbar: true,
+    webPreferences: {
+      contextIsolation: true,
+      nodeIntegration: false,
+      sandbox: true,
+      backgroundThrottling: false
+    }
   });
+
   try {
     const documentHtml = `<!doctype html><html><head><meta charset="utf-8"><style>${thermalPrintCss(contentWidth, fontStyle)}</style></head><body>${options.html}</body></html>`;
     await printWindow.loadURL(`data:text/html;charset=utf-8,${encodeURIComponent(documentHtml)}`);
-    await printWindow.webContents.executeJavaScript(`(async()=>{await document.fonts.ready;await Promise.all([...document.images].map(img=>img.complete?Promise.resolve():new Promise(resolve=>{img.onload=img.onerror=resolve})));document.body.offsetHeight;return true})()`);
+    await printWindow.webContents.executeJavaScript(`(async()=>{
+      await document.fonts.ready;
+      await Promise.all([...document.images].map(img=>img.complete?Promise.resolve():new Promise(resolve=>{img.onload=img.onerror=resolve})));
+      document.body.offsetHeight;
+      return true;
+    })()`);
 
-    if (direct && process.platform === 'win32') {
-      const receiptBounds = await printWindow.webContents.executeJavaScript(`(()=>{const r=document.querySelector('.receipt').getBoundingClientRect();return{x:0,y:0,width:576,height:Math.ceil(r.height + 30)}})()`);
-      printWindow.setContentSize(576, Math.min(12000, Math.max(300, receiptBounds.height)));
-      await new Promise(resolve => setTimeout(resolve, 400));
-      const image = await printWindow.webContents.capturePage(receiptBounds);
-      const bgra = image.getBitmap();
-      const rasterBuffer = buildEscPosRasterReceipt(bgra, 576, receiptBounds.height, options.cutFeedLines || 8, options.autoCut !== false);
-      return await printWindowsEscPosBuffer(options.deviceName, rasterBuffer);
-    }
-
+    await new Promise(resolve => setTimeout(resolve, direct ? 600 : 200));
 
     return await new Promise(resolve => {
       const printOptions = {
-        silent: direct, deviceName: options.deviceName || undefined,
-        printBackground: true, color: false, margins: { marginType: 'none' }, landscape: false
+        silent: direct,
+        deviceName: options.deviceName || undefined,
+        printBackground: true,
+        color: false,
+        margins: { marginType: 'none' },
+        landscape: false,
+        pagesPerSheet: 1,
+        collate: false
       };
+
       printWindow.webContents.print(printOptions, (success, failureReason) => {
-        setTimeout(() => resolve({ success, failureReason }), direct ? 4000 : 1000);
+        setTimeout(() => resolve({ success, failureReason }), direct ? 3000 : 1000);
       });
     });
   } catch (error) {
@@ -523,6 +536,7 @@ async function printThermalReceipt(options = {}) {
     if (!printWindow.isDestroyed()) printWindow.destroy();
   }
 }
+
 
 
 function createWindow() {
