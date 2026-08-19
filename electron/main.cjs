@@ -486,21 +486,24 @@ async function printThermalReceipt(options = {}) {
   }
 
   // Mode 2 (direct, Windows): Chromium renders TrueType HTML → capturePage → ESC/POS raster
-  // webContents.print fails on thermal printers that only have RAW/ESC/POS drivers (no GDI/XPS).
-  // Solution: use the same RAW spooler path that works for hardware text mode, but feed it
-  // a raster image captured from Chromium's TrueType-rendered output.
-  //
   // Mode 3 (dialog, non-direct): webContents.print with silent:false shows the OS print dialog.
 
-  // Render width: 80mm paper body in Chromium (96 DPI = 3.7795px/mm → 80mm ≈ 302px)
-  const windowW = Math.round(80 * 3.7795);
+  // Printer: 203 DPI = 203/25.4 ≈ 7.992 dots/mm
+  // Screen:   96 DPI =  96/25.4 ≈ 3.780 px/mm
+  // ZOOM: render at printer DPI so each screen pixel = 1 printer dot (no scaling, no blur)
+  const DOTS_PER_MM = 203 / 25.4;  // ≈ 7.992
+  const ZOOM = 203 / 96;           // ≈ 2.115  (printer DPI / screen DPI)
+
+  // Window at 80mm paper width in printer dots so CSS mm units map 1:1 to printer dots at ZOOM
+  const windowW = Math.round(80 * DOTS_PER_MM);          // 640px
+  const printWidthDots = Math.round(contentWidth * DOTS_PER_MM); // 511 for 64mm, 544 for 68mm
 
   const tempHtmlPath = path.join(os.tmpdir(), `anda-pos-receipt-${Date.now()}.html`);
   const printWindow = new BrowserWindow({
     x: -2000, y: 0,        // off-screen but show:true so Chromium renders layout & fonts
     show: true,
-    width: windowW,
-    height: 2000,
+    width: windowW,         // 640px — CSS viewport becomes 302px after ZOOM (= 80mm at 96 DPI)
+    height: 4000,
     frame: false,
     transparent: false,
     backgroundColor: '#ffffff',
@@ -510,7 +513,7 @@ async function printThermalReceipt(options = {}) {
     webPreferences: {
       contextIsolation: true,
       nodeIntegration: false,
-      sandbox: false,         // sandbox:false required so Segoe UI / Tahoma load from Windows fonts dir
+      sandbox: false,         // needed so Segoe UI / Tahoma load from Windows fonts dir
       backgroundThrottling: false
     }
   });
@@ -520,7 +523,7 @@ async function printThermalReceipt(options = {}) {
     fs.writeFileSync(tempHtmlPath, documentHtml, 'utf8');
     await printWindow.loadFile(tempHtmlPath);
 
-    // Wait for fonts, images, and layout pass to fully complete
+    // Wait for fonts & images
     await printWindow.webContents.executeJavaScript(`(async () => {
       await document.fonts.ready;
       await Promise.all([...document.images].map(img =>
@@ -530,31 +533,47 @@ async function printThermalReceipt(options = {}) {
       void document.body.getBoundingClientRect();
       return true;
     })()`);
-    await new Promise(resolve => setTimeout(resolve, 400));
+    await new Promise(resolve => setTimeout(resolve, 200));
 
     if (direct && process.platform === 'win32') {
-      // ── Mode 2: capturePage → 1-bit dither → ESC/POS RAW spooler ──
-      const captured = await printWindow.webContents.capturePage();
+      // ── Mode 2: high-res capturePage → 1-bit dither → ESC/POS RAW spooler ──
+
+      // Apply zoom so 1 screen pixel = 1 printer dot (renders at 203 DPI effective)
+      // At ZOOM 2.115: CSS viewport = 640/2.115 ≈ 302px (= 80mm at 96 DPI) — CSS mm units correct
+      await printWindow.webContents.setZoomFactor(ZOOM);
+      await new Promise(resolve => setTimeout(resolve, 150)); // wait for layout re-flow at new zoom
+
+      // Detect actual content height (CSS px) and convert to screen pixels = printer dots
+      const cssScrollH = await printWindow.webContents.executeJavaScript(
+        'Math.ceil(document.body.scrollHeight)'
+      );
+      // screenH = printer dot rows to capture (content only, no trailing blank space)
+      const screenH = Math.min(Math.ceil(cssScrollH * ZOOM) + 32, 6000);
+
+      // Crop to content column: receipt is centered on 80mm paper
+      // CSS margin on each side = (80mm - contentWidth mm) / 2, in screen px = margin * ZOOM
+      const cropX = Math.floor((windowW - printWidthDots) / 2);
+
+      const captured = await printWindow.webContents.capturePage({
+        x: cropX, y: 0, width: printWidthDots, height: screenH
+      });
+
       const { width: imgW, height: imgH } = captured.getSize();
       const bgraPixels = captured.toBitmap();
 
-      // Printer: 203 DPI = ~8 dots/mm. Map contentWidth mm to printer dots.
-      const printWidthDots = Math.round(contentWidth * 8);
-      const printHeightDots = Math.min(imgH, 3000);
-      const scaleX = imgW / printWidthDots;
-
+      // 1:1 pixel-to-dot mapping — no scaling needed, no blur
       const autoCutFlag = options.autoCut !== false;
       const feedLines = [6, 8, 10].includes(Number(options.cutFeedLines)) ? Number(options.cutFeedLines) : 8;
-      const bytesPerRow = Math.ceil(printWidthDots / 8);
-      const CHUNK_ROWS = 255; // max safe rows per single GS v 0 command
+      const bytesPerRow = Math.ceil(imgW / 8);
+      const CHUNK_ROWS = 255; // max safe rows per GS v 0 command
 
       const parts = [
-        Buffer.from([0x1b, 0x40]),       // ESC @ initialize
+        Buffer.from([0x1b, 0x40]),            // ESC @ initialize
         Buffer.from([0x1b, 0x4c, 0x00, 0x00]) // left margin = 0
       ];
 
-      for (let rowStart = 0; rowStart < printHeightDots; rowStart += CHUNK_ROWS) {
-        const rowEnd = Math.min(rowStart + CHUNK_ROWS, printHeightDots);
+      for (let rowStart = 0; rowStart < imgH; rowStart += CHUNK_ROWS) {
+        const rowEnd = Math.min(rowStart + CHUNK_ROWS, imgH);
         const numRows = rowEnd - rowStart;
         const xL = bytesPerRow & 0xff;
         const xH = (bytesPerRow >> 8) & 0xff;
@@ -564,11 +583,9 @@ async function printThermalReceipt(options = {}) {
         const chunkBuf = Buffer.alloc(bytesPerRow * numRows, 0);
         for (let r = 0; r < numRows; r++) {
           const y = rowStart + r;
-          if (y >= imgH) break;
-          for (let dotX = 0; dotX < printWidthDots; dotX++) {
-            const srcX = Math.min(Math.round(dotX * scaleX), imgW - 1);
-            const idx = (y * imgW + srcX) * 4;
-            // toBitmap() returns BGRA (not RGBA)
+          for (let dotX = 0; dotX < imgW; dotX++) {
+            const idx = (y * imgW + dotX) * 4;
+            // toBitmap() returns BGRA
             const lum = 0.299 * bgraPixels[idx + 2] + 0.587 * bgraPixels[idx + 1] + 0.114 * bgraPixels[idx];
             if (lum < 148) chunkBuf[r * bytesPerRow + Math.floor(dotX / 8)] |= (0x80 >> (dotX % 8));
           }
@@ -605,6 +622,7 @@ async function printThermalReceipt(options = {}) {
     try { fs.unlinkSync(tempHtmlPath); } catch (_) { /* ignore */ }
   }
 }
+
 
 
 
