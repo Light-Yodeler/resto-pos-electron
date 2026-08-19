@@ -26,7 +26,8 @@ test('monthly revenue groups transaction totals by calendar day',()=>{const mont
 test('backup wrapper preserves portable application data',()=>{const data={products:[],users:[],tables:[],settings:{restaurantName:'Resto Baru',brandLogo:'data:image/png;base64,AA=='}};const backup={format:'anda-pos-backup',version:1,data};const restored=backup.format==='anda-pos-backup'?backup.data:backup;assert.equal(restored.settings.restaurantName,'Resto Baru');assert.match(restored.settings.brandLogo,/^data:image\/png/)});
 test('saving operational settings preserves uploaded logo',()=>{const previous={brandLogo:'data:image/png;base64,AA==',restaurantName:'Anda'},next={...previous,kitchenEnabled:false,restaurantName:'Resto Lain'};assert.equal(next.brandLogo,previous.brandLogo);assert.equal(next.restaurantName,'Resto Lain')});
 test('80mm receipt defaults to a safe 64mm printable content area',()=>{const requested=undefined,allowed=[64,68,72],width=allowed.includes(Number(requested))?Number(requested):64;assert.equal(width,64);assert.equal((80-width)/2,8)});
-test('thermal print delegates paper size to the Windows printer driver',()=>{const source=require('node:fs').readFileSync(require('node:path').join(__dirname,'..','electron','main.cjs'),'utf8'),printBlock=source.slice(source.indexOf('async function printThermalReceipt'),source.indexOf('function createWindow'));assert.equal(printBlock.includes('pageSize:'),false);assert.equal(printBlock.includes('capturePage(receiptBounds)'),true);assert.equal(printBlock.includes('filter:contrast(1.35)'),true)});
+test('thermal print delegates paper size to the Windows printer driver',()=>{const source=require('node:fs').readFileSync(require('node:path').join(__dirname,'..','electron','main.cjs'),'utf8'),printBlock=source.slice(source.indexOf('async function printThermalReceipt'),source.indexOf('function createWindow'));assert.equal(printBlock.includes('pageSize:'),false);assert.equal(printBlock.includes('capturePage(receiptBounds)'),true);assert.equal(printBlock.includes('buildEscPosRasterReceipt'),true)});
+
 test('unsupported receipt widths fall back to safe width',()=>{const normalize=value=>[64,68,72].includes(Number(value))?Number(value):64;assert.equal(normalize(72),72);assert.equal(normalize(80),64);assert.equal(normalize('bad'),64)});
 test('silent print keeps its rendered document alive for the Windows spooler',()=>{const direct=true,renderDelay=direct?1500:500,spoolDelay=direct?4000:1000;assert.equal(renderDelay,1500);assert.equal(spoolDelay,4000);assert.ok(renderDelay+spoolDelay>=5000)});
 test('clear receipt typography keeps body text thin and headings readable',()=>{const fontWeight=400,headingWeight=700;assert.equal(fontWeight,400);assert.ok(headingWeight>fontWeight)});
@@ -288,10 +289,11 @@ test('high-legibility receipt font options provide distinct glyphs for digits 6,
   assert.match(mainJs, /Tahoma, Verdana/);
   assert.match(mainJs, /\['clear', 'medium', 'bold', 'distinct', 'sansClean'\]/);
 
-  // Verify printThermalReceipt routes ESC/POS directly to native hardware text engine
-  assert.match(mainJs, /direct && process.platform === 'win32' && directMode === 'escpos'/);
-  assert.match(mainJs, /command\(0x1b, 0x4d, 1\)/);
-  assert.match(mainJs, /setCharSpacing\(2\)/);
+  // Verify printThermalReceipt supports 1:1 ESC/POS raster rendering and hardware text
+  assert.match(mainJs, /bgraToEscPosRaster/);
+  assert.match(mainJs, /buildEscPosRasterReceipt/);
+  assert.match(mainJs, /printWindowsEscPosBuffer/);
+
 
 
   // Verify UI, receiptHTML, and CSS support dynamic receipt font

@@ -137,8 +137,68 @@ function buildEscPosReceipt(receipt, fontStyle = 'clear', requestedColumns = 42,
   return Buffer.concat(chunks);
 }
 
-async function printWindowsEscPos(printerName, receipt, fontStyle, columns, autoCut, cutFeedLines) {
+function bgraToEscPosRaster(bgraBuffer, width, height, threshold = 180) {
+  const bytesPerRow = Math.ceil(width / 8);
+  const totalBytes = bytesPerRow * height;
+  const rasterData = Buffer.alloc(totalBytes, 0);
 
+  for (let y = 0; y < height; y++) {
+    for (let x = 0; x < width; x++) {
+      const offset = (y * width + x) * 4;
+      const b = bgraBuffer[offset];
+      const g = bgraBuffer[offset + 1];
+      const r = bgraBuffer[offset + 2];
+      const a = bgraBuffer[offset + 3];
+      const luminance = a < 128 ? 255 : (0.299 * r + 0.587 * g + 0.114 * b);
+      if (luminance < threshold) {
+        const byteIndex = y * bytesPerRow + Math.floor(x / 8);
+        const bitIndex = 7 - (x % 8);
+        rasterData[byteIndex] |= (1 << bitIndex);
+      }
+    }
+  }
+
+  const xL = bytesPerRow & 0xff;
+  const xH = (bytesPerRow >> 8) & 0xff;
+  const yL = height & 0xff;
+  const yH = (height >> 8) & 0xff;
+  const header = Buffer.from([0x1d, 0x76, 0x30, 0x00, xL, xH, yL, yH]);
+
+  return Buffer.concat([header, rasterData]);
+}
+
+function buildEscPosRasterReceipt(bgraBuffer, width, height, feedLines = 8, autoCut = true) {
+  const raster = bgraToEscPosRaster(bgraBuffer, width, height);
+  const chunks = [
+    Buffer.from([0x1b, 0x40]), // Initialize printer
+    Buffer.from([0x1b, 0x61, 0x01]), // Center
+    raster,
+    Buffer.from([0x1b, 0x64, Math.max(2, feedLines)]) // Feed lines
+  ];
+  if (autoCut) chunks.push(Buffer.from([0x1d, 0x56, 0x01])); // Standard partial cut
+  return Buffer.concat(chunks);
+}
+
+async function printWindowsEscPosBuffer(printerName, buffer) {
+  const jobId = `${process.pid}-${Date.now()}`;
+  const temporaryData = path.join(os.tmpdir(), `anda-pos-receipt-${jobId}.bin`);
+  const packagedScript = path.join(__dirname, 'print-escpos-windows.ps1');
+  const temporaryScript = path.join(os.tmpdir(), `anda-pos-escpos-${jobId}.ps1`);
+  try {
+    fs.writeFileSync(temporaryData, buffer);
+    fs.copyFileSync(packagedScript, temporaryScript);
+    await execFileAsync('powershell.exe', ['-NoLogo', '-NoProfile', '-NonInteractive', '-ExecutionPolicy', 'Bypass', '-File', temporaryScript, '-PrinterName', printerName, '-DataPath', temporaryData], { windowsHide: true, timeout: 30000 });
+    await wait(1200);
+    return { success: true, method: 'windows-escpos-raster' };
+  } catch (error) {
+    return { success: false, failureReason: `ESC/POS Windows Raster: ${error.stderr || error.message}` };
+  } finally {
+    try { fs.unlinkSync(temporaryData); } catch {}
+    try { fs.unlinkSync(temporaryScript); } catch {}
+  }
+}
+
+async function printWindowsEscPos(printerName, receipt, fontStyle, columns, autoCut, cutFeedLines) {
   const jobId = `${process.pid}-${Date.now()}`;
   const temporaryData = path.join(os.tmpdir(), `anda-pos-receipt-${jobId}.bin`);
   const packagedScript = path.join(__dirname, 'print-escpos-windows.ps1');
@@ -175,6 +235,7 @@ async function printWindowsRaster(printerName, image, contentWidth) {
     try { fs.unlinkSync(temporaryScript); } catch {}
   }
 }
+
 
 
 
@@ -370,81 +431,83 @@ function restoreNativeDatabase(sourcePath) {
     throw error;
   }
 }
-const thermalPrintCss = (contentWidth, fontStyle = 'clear') => {
+const thermalPrintCss = (contentWidthMm = 64, fontStyle = 'distinct') => {
   let typography;
   switch (fontStyle) {
     case 'distinct':
-      typography = { family: '"Segoe UI", "Trebuchet MS", "Lucida Sans Unicode", "DejaVu Sans", sans-serif', weight: 600, heading: 700, total: 800, size: 12.5 };
+      typography = { family: '"Segoe UI", "Trebuchet MS", "Lucida Sans Unicode", "DejaVu Sans", Arial, sans-serif', weight: 600, heading: 700, total: 800, size: 21 };
       break;
     case 'sansClean':
-      typography = { family: 'Tahoma, Verdana, "Segoe UI", sans-serif', weight: 600, heading: 700, total: 800, size: 12 };
+      typography = { family: 'Tahoma, Verdana, "Segoe UI", Arial, sans-serif', weight: 600, heading: 700, total: 800, size: 20 };
       break;
     case 'bold':
-      typography = { family: 'Arial, sans-serif', weight: 650, heading: 700, total: 700, size: 11.5 };
+      typography = { family: 'Arial, "Segoe UI", sans-serif', weight: 700, heading: 800, total: 800, size: 20 };
       break;
     case 'medium':
-      typography = { family: 'Arial, sans-serif', weight: 500, heading: 650, total: 650, size: 12 };
+      typography = { family: 'Arial, "Segoe UI", sans-serif', weight: 500, heading: 700, total: 700, size: 21 };
       break;
     case 'clear':
     default:
-      typography = { family: 'Consolas, "Courier New", monospace', weight: 400, heading: 700, total: 700, size: 12.5 };
+      typography = { family: 'Consolas, "Courier New", monospace', weight: 600, heading: 700, total: 700, size: 21 };
       break;
+
   }
+  const widthDots = Math.min(576, Math.max(460, Math.round(contentWidthMm * 8)));
   return `
   @page { margin: 0; }
   * { box-sizing: border-box; }
-  html, body { width: 80mm; margin: 0; padding: 0; background: #fff; color: #000; }
-  body { font: ${typography.weight} ${typography.size}px/1.38 ${typography.family}; -webkit-print-color-adjust: exact; print-color-adjust: exact; }
-  .receipt { width: ${contentWidth}mm; margin: 0 auto; padding: 4mm 0 5mm; overflow: hidden; }
-  .receipt-logo { display: block; width: 22mm; height: 16mm; object-fit: contain; margin: 0 auto 2mm; }
-  .receipt h2 { max-width: 100%; margin: 0 0 2mm; text-align: center; font: ${typography.heading} 16px/1.2 ${typography.family}; overflow-wrap: anywhere; }
-  .receipt p { margin: 2mm 0; overflow-wrap: anywhere; font-weight: ${typography.weight}; }
-  .receipt-line { display: grid; grid-template-columns: minmax(0, 1fr) max-content; align-items: start; gap: 2mm; margin: 1.6mm 0; }
+  html, body { width: 576px; margin: 0; padding: 0; background: #fff; color: #000; -webkit-font-smoothing: antialiased; text-rendering: geometricPrecision; }
+  body { font: ${typography.weight} ${typography.size}px/1.38 ${typography.family}; }
+  .receipt { width: ${widthDots}px; margin: 0 auto; padding: 15px 0 25px; overflow: hidden; font-family: ${typography.family}; }
+  .receipt-logo { display: block; width: 180px; height: 130px; object-fit: contain; margin: 0 auto 12px; }
+  .receipt h2 { max-width: 100%; margin: 0 0 12px; text-align: center; font: ${typography.heading} 26px/1.2 ${typography.family}; overflow-wrap: anywhere; }
+  .receipt p { margin: 10px 0; overflow-wrap: anywhere; font-weight: ${typography.weight}; font-size: ${typography.size}px; font-family: ${typography.family}; }
+  .receipt-line { display: grid; grid-template-columns: minmax(0, 1fr) max-content; align-items: start; gap: 12px; margin: 8px 0; font-family: ${typography.family}; font-size: ${typography.size}px; }
   .receipt-line > span:first-child, .receipt-line > strong:first-child { min-width: 0; overflow-wrap: anywhere; }
   .receipt-line > span:last-child, .receipt-line > strong:last-child { white-space: nowrap; text-align: right; }
   .receipt-line { font-weight: ${typography.weight}; }
-  .receipt-total { border-top: 1px dashed #000; margin-top: 2.5mm; padding-top: 2.5mm; font-weight: ${typography.total}; }
+  .receipt-total { border-top: 2px dashed #000; margin-top: 14px; padding-top: 14px; font-weight: ${typography.total}; font-size: ${typography.size + 2}px; }
+  .receipt-item-discount { font-size: ${typography.size - 3}px; margin-top: -4px; padding-left: 14px; }
 `;
 };
 
 async function printThermalReceipt(options = {}) {
   const contentWidth = [64, 68, 72].includes(Number(options.contentWidth)) ? Number(options.contentWidth) : 64;
-  const fontStyle = ['clear', 'medium', 'bold', 'distinct', 'sansClean'].includes(options.fontStyle) ? options.fontStyle : 'clear';
+  const fontStyle = ['clear', 'medium', 'bold', 'distinct', 'sansClean'].includes(options.fontStyle) ? options.fontStyle : 'distinct';
 
   if (typeof options.html !== 'string' || !options.html.includes('receipt') || options.html.length > 6 * 1024 * 1024) {
     return { success: false, failureReason: 'Data struk tidak valid.' };
   }
   const direct = Boolean(options.silent && options.deviceName);
   const directMode = options.directMode === 'graphics' ? 'graphics' : 'escpos';
-  // When in ESC/POS mode (the recommended default), print via native ESC/POS hardware text engine
-  // which produces 100% razor-sharp, dark, high-contrast thermal text with zero blurriness.
-  // The fontStyle ('distinct', 'medium', 'clear', 'bold') is rendered using hardware Font A/B & character spacing.
-  if (direct && process.platform === 'win32' && directMode === 'escpos') {
+
+  // Mode 1: Fast ASCII Hardware ROM Text Mode (Only when fontStyle === 'clear' AND directMode === 'escpos')
+  if (direct && process.platform === 'win32' && directMode === 'escpos' && fontStyle === 'clear') {
     return await printWindowsEscPos(options.deviceName, options.nativeReceipt, fontStyle, options.nativeColumns, options.autoCut !== false, options.cutFeedLines);
   }
+
+  // Mode 2: High-Resolution 1:1 ESC/POS TrueType Raster Rendering (For distinct, sansClean, medium, bold, or graphics mode)
+  // Renders the TrueType font at the exact 576-dot physical thermal head width and sends 1-bit bitmap to the printer!
   const printWindow = new BrowserWindow({
-
-
-    show: direct, x: direct ? -10000 : undefined, y: direct ? -10000 : undefined,
-    width: 420, height: 800, backgroundColor: '#ffffff', skipTaskbar: true,
+    show: false, width: 576, height: 1200, backgroundColor: '#ffffff', skipTaskbar: true,
     webPreferences: { contextIsolation: true, nodeIntegration: false, sandbox: true, backgroundThrottling: false }
   });
   try {
     const documentHtml = `<!doctype html><html><head><meta charset="utf-8"><style>${thermalPrintCss(contentWidth, fontStyle)}</style></head><body>${options.html}</body></html>`;
     await printWindow.loadURL(`data:text/html;charset=utf-8,${encodeURIComponent(documentHtml)}`);
     await printWindow.webContents.executeJavaScript(`(async()=>{await document.fonts.ready;await Promise.all([...document.images].map(img=>img.complete?Promise.resolve():new Promise(resolve=>{img.onload=img.onerror=resolve})));document.body.offsetHeight;return true})()`);
-    if (direct) {
-      const receiptBounds = await printWindow.webContents.executeJavaScript(`(()=>{const r=document.querySelector('.receipt').getBoundingClientRect();return{x:Math.max(0,Math.floor(r.x)),y:Math.max(0,Math.floor(r.y)),width:Math.ceil(r.width),height:Math.ceil(r.height)}})()`);
-      printWindow.setContentSize(420, Math.min(12000, Math.max(300, receiptBounds.y + receiptBounds.height + 4)));
-      printWindow.showInactive();
-      await new Promise(resolve => setTimeout(resolve, 800));
+
+    if (direct && process.platform === 'win32') {
+      const receiptBounds = await printWindow.webContents.executeJavaScript(`(()=>{const r=document.querySelector('.receipt').getBoundingClientRect();return{x:0,y:0,width:576,height:Math.ceil(r.height + 30)}})()`);
+      printWindow.setContentSize(576, Math.min(12000, Math.max(300, receiptBounds.height)));
+      await new Promise(resolve => setTimeout(resolve, 400));
       const image = await printWindow.webContents.capturePage(receiptBounds);
-      if (process.platform === 'win32') return await printWindowsRaster(options.deviceName, image, contentWidth);
-      const rasterHtml = `<!doctype html><html><head><meta charset="utf-8"><style>@page{margin:0}html,body{width:80mm;margin:0;padding:0;background:#fff}img{display:block;width:${contentWidth}mm;height:auto;margin:0 auto;filter:contrast(1.35)}</style></head><body><img src="${image.toDataURL()}" alt="Receipt"></body></html>`;
-      await printWindow.loadURL(`data:text/html;charset=utf-8,${encodeURIComponent(rasterHtml)}`);
-      await printWindow.webContents.executeJavaScript('(async()=>{await document.images[0].decode();document.body.offsetHeight;return true})()');
-      await new Promise(resolve => setTimeout(resolve, 1200));
-    } else await new Promise(resolve => setTimeout(resolve, 500));
+      const bgra = image.getBitmap();
+      const rasterBuffer = buildEscPosRasterReceipt(bgra, 576, receiptBounds.height, options.cutFeedLines || 8, options.autoCut !== false);
+      return await printWindowsEscPosBuffer(options.deviceName, rasterBuffer);
+    }
+
+
     return await new Promise(resolve => {
       const printOptions = {
         silent: direct, deviceName: options.deviceName || undefined,
@@ -460,6 +523,7 @@ async function printThermalReceipt(options = {}) {
     if (!printWindow.isDestroyed()) printWindow.destroy();
   }
 }
+
 
 function createWindow() {
   window = new BrowserWindow({
