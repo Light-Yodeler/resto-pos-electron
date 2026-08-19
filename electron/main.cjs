@@ -486,33 +486,51 @@ async function printThermalReceipt(options = {}) {
   }
 
   // Mode 2: Floreant POS Document Driver Vector Architecture
-  // Direct document vector printing via Chromium Skia to the Windows Print Spooler / Driver.
-  // Eliminates printer buffer wrapping and line overlapping while rendering ultra-sharp TrueType fonts.
+  // Uses a temp HTML file + loadFile() so Chromium fully renders TrueType fonts before printing.
+  // data: URI with sandbox:true caused blank pages because CSS was not applied in hidden windows.
+  const tempHtmlPath = path.join(os.tmpdir(), `anda-pos-receipt-${Date.now()}.html`);
   const printWindow = new BrowserWindow({
-    show: false,
-    width: 400,
-    height: 900,
+    // Position off-screen instead of show:false so Chromium actually renders the layout.
+    // show:false causes Chromium to skip paint/layout passes → blank output on thermal printers.
+    x: -2000,
+    y: 0,
+    show: true,
+    width: 320,
+    height: 1200,
+    frame: false,
+    transparent: false,
     backgroundColor: '#ffffff',
     skipTaskbar: true,
+    focusable: false,
+    alwaysOnTop: false,
     webPreferences: {
       contextIsolation: true,
       nodeIntegration: false,
-      sandbox: true,
+      // sandbox: false required so system fonts (Segoe UI, Tahoma) resolve from Windows font dir
+      sandbox: false,
       backgroundThrottling: false
     }
   });
 
   try {
     const documentHtml = `<!doctype html><html><head><meta charset="utf-8"><style>${thermalPrintCss(contentWidth, fontStyle)}</style></head><body>${options.html}</body></html>`;
-    await printWindow.loadURL(`data:text/html;charset=utf-8,${encodeURIComponent(documentHtml)}`);
-    await printWindow.webContents.executeJavaScript(`(async()=>{
+    fs.writeFileSync(tempHtmlPath, documentHtml, 'utf8');
+    await printWindow.loadFile(tempHtmlPath);
+
+    // Wait for fonts + images + layout paint to complete
+    await printWindow.webContents.executeJavaScript(`(async () => {
       await document.fonts.ready;
-      await Promise.all([...document.images].map(img=>img.complete?Promise.resolve():new Promise(resolve=>{img.onload=img.onerror=resolve})));
-      document.body.offsetHeight;
+      await Promise.all([...document.images].map(img =>
+        img.complete ? Promise.resolve() :
+        new Promise(resolve => { img.onload = img.onerror = resolve; })
+      ));
+      // Force a synchronous layout pass so Chromium flushes the render tree
+      void document.body.getBoundingClientRect();
       return true;
     })()`);
 
-    await new Promise(resolve => setTimeout(resolve, direct ? 600 : 200));
+    // Give the compositor an extra frame to finish painting before sending to spooler
+    await new Promise(resolve => setTimeout(resolve, direct ? 800 : 400));
 
     return await new Promise(resolve => {
       const printOptions = {
@@ -534,6 +552,7 @@ async function printThermalReceipt(options = {}) {
     return { success: false, failureReason: error.message };
   } finally {
     if (!printWindow.isDestroyed()) printWindow.destroy();
+    try { fs.unlinkSync(tempHtmlPath); } catch (_) { /* ignore */ }
   }
 }
 
