@@ -435,37 +435,37 @@ const thermalPrintCss = (contentWidthMm = 68, fontStyle = 'distinct') => {
   let typography;
   switch (fontStyle) {
     case 'distinct':
-      typography = { family: '"Segoe UI", "Trebuchet MS", "Lucida Sans Unicode", "DejaVu Sans", Arial, sans-serif', weight: 600, heading: 700, total: 800, size: 13 };
+      typography = { family: '"Segoe UI", "Trebuchet MS", "Lucida Sans Unicode", "DejaVu Sans", Arial, sans-serif', weight: 400, heading: 600, total: 600, size: 12.5 };
       break;
     case 'sansClean':
-      typography = { family: 'Tahoma, Verdana, "Segoe UI", Arial, sans-serif', weight: 600, heading: 700, total: 800, size: 12.5 };
+      typography = { family: 'Tahoma, Verdana, "Segoe UI", Arial, sans-serif', weight: 400, heading: 600, total: 600, size: 12 };
       break;
     case 'bold':
-      typography = { family: 'Arial, "Segoe UI", sans-serif', weight: 700, heading: 800, total: 800, size: 12.5 };
+      typography = { family: 'Arial, "Segoe UI", sans-serif', weight: 600, heading: 700, total: 700, size: 12 };
       break;
     case 'medium':
-      typography = { family: 'Arial, "Segoe UI", sans-serif', weight: 500, heading: 700, total: 700, size: 13 };
+      typography = { family: 'Arial, "Segoe UI", sans-serif', weight: 500, heading: 600, total: 600, size: 12.5 };
       break;
     case 'clear':
     default:
-      typography = { family: 'Consolas, "Courier New", monospace', weight: 600, heading: 700, total: 700, size: 13 };
+      typography = { family: 'Consolas, "Courier New", monospace', weight: 400, heading: 600, total: 600, size: 12.5 };
       break;
   }
   const contentWidth = [64, 68, 72].includes(Number(contentWidthMm)) ? Number(contentWidthMm) : 68;
   return `
   @page { size: 80mm auto; margin: 0; }
   * { box-sizing: border-box; -webkit-print-color-adjust: exact; print-color-adjust: exact; }
-  html, body { width: 80mm; margin: 0; padding: 0; background: #fff; color: #000; font-family: ${typography.family}; }
-  body { font: ${typography.weight} ${typography.size}px/1.35 ${typography.family}; }
+  html, body { width: 80mm; margin: 0; padding: 0; background: #fff; color: #000; font-family: ${typography.family}; -webkit-font-smoothing: antialiased; }
+  body { font: ${typography.weight} ${typography.size}px/1.35 ${typography.family}; letter-spacing: 0.15px; }
   .receipt { width: ${contentWidth}mm; margin: 0 auto; padding: 3mm 0 6mm; overflow: hidden; font-family: ${typography.family}; }
   .receipt-logo { display: block; width: 26mm; height: 18mm; object-fit: contain; margin: 0 auto 2mm; }
-  .receipt h2 { max-width: 100%; margin: 0 0 2mm; text-align: center; font: ${typography.heading} 16px/1.2 ${typography.family}; overflow-wrap: anywhere; }
+  .receipt h2 { max-width: 100%; margin: 0 0 2mm; text-align: center; font: ${typography.heading} 15px/1.2 ${typography.family}; overflow-wrap: anywhere; letter-spacing: 0.2px; }
   .receipt p { margin: 1.5mm 0; overflow-wrap: anywhere; font-weight: ${typography.weight}; font-size: ${typography.size}px; font-family: ${typography.family}; }
-  .receipt-line { display: grid; grid-template-columns: minmax(0, 1fr) max-content; align-items: start; gap: 2mm; margin: 1.6mm 0; font-family: ${typography.family}; font-size: ${typography.size}px; }
+  .receipt-line { display: grid; grid-template-columns: minmax(0, 1fr) max-content; align-items: start; gap: 2mm; margin: 1.6mm 0; font-family: ${typography.family}; font-size: ${typography.size}px; font-weight: ${typography.weight}; }
   .receipt-line > span:first-child, .receipt-line > strong:first-child { min-width: 0; overflow-wrap: anywhere; }
   .receipt-line > span:last-child, .receipt-line > strong:last-child { white-space: nowrap; text-align: right; }
-  .receipt-line { font-weight: ${typography.weight}; }
-  .receipt-total { border-top: 1.5px dashed #000; margin-top: 2.5mm; padding-top: 2.5mm; font-weight: ${typography.total}; font-size: ${typography.size + 1}px; }
+  .receipt-line strong, .receipt strong { font-weight: ${typography.total}; }
+  .receipt-total { border-top: 1px dashed #000; margin-top: 2.5mm; padding-top: 2.5mm; font-weight: ${typography.total}; font-size: ${typography.size}px; }
   .receipt-item-discount { font-size: ${typography.size - 2}px; margin-top: -1mm; padding-left: 2mm; }
 `;
 };
@@ -485,19 +485,18 @@ async function printThermalReceipt(options = {}) {
     return await printWindowsEscPos(options.deviceName, options.nativeReceipt, fontStyle, options.nativeColumns, options.autoCut !== false, options.cutFeedLines);
   }
 
-  // Mode 2 (direct, Windows): Chromium renders HTML at 2× zoom (192 effective DPI) →
-  //   capturePage → scale to 203 DPI printer dots in dither loop → ESC/POS RAW spooler.
-  //   At 2× zoom: source ~488px for 512 printer dots = scaleX ≈ 0.95 (near 1:1, no blur).
-  //   Without zoom: source 242px for 512 dots = scaleX 0.47 (heavy upscale, blocky artifacts).
+  // Mode 2 (direct, Windows): Chromium renders HTML at 3× zoom (288 effective DPI) →
+  //   capturePage → area-weighted supersampling to 203 DPI printer dots in dither loop → RAW spooler.
+  //   At 3× zoom + area averaging: smooth continuous curves on 0, 6, 8, 9 with no pixelation/blur.
   // Mode 3 (non-direct): webContents.print with OS dialog.
 
   const PX_PER_MM = 96 / 25.4;      // 3.7795 — Chromium screen DPI
   const DOTS_PER_MM = 203 / 25.4;   // 7.992  — thermal printer DPI
-  const RENDER_SCALE = 2;            // 2× zoom for high-res capture
-  // Window at 2× the CSS layout width so zoom doesn't clip
-  const windowW = Math.ceil(80 * PX_PER_MM * RENDER_SCALE) + 8; // ~612 DIP
-  // Content column at 2× zoom (DIP coordinates, not CSS px)
-  const contentDIP = Math.ceil(contentWidth * PX_PER_MM * RENDER_SCALE); // ~484 for 64mm
+  const RENDER_SCALE = 3;            // 3× zoom for high-res supersampled capture
+  // Window at 3× the CSS layout width so zoom doesn't clip
+  const windowW = Math.ceil(80 * PX_PER_MM * RENDER_SCALE) + 16; // ~924 DIP
+  // Content column at 3× zoom (DIP coordinates, not CSS px)
+  const contentDIP = Math.ceil(contentWidth * PX_PER_MM * RENDER_SCALE); // ~726 for 64mm
   const printWidthDots = Math.round(contentWidth * DOTS_PER_MM); // 512 for 64mm
 
   const tempHtmlPath = path.join(os.tmpdir(), `anda-pos-receipt-${Date.now()}.html`);
@@ -505,7 +504,7 @@ async function printThermalReceipt(options = {}) {
     x: -2000, y: 0,
     show: true,
     width: windowW,
-    height: 6000,
+    height: 8000,
     frame: false,
     transparent: false,
     backgroundColor: '#ffffff',
@@ -537,10 +536,9 @@ async function printThermalReceipt(options = {}) {
     await new Promise(resolve => setTimeout(resolve, 200));
 
     if (direct && process.platform === 'win32') {
-      // ── Mode 2: 2× zoom → capturePage → dither → RAW spooler ──
+      // ── Mode 2: 3× zoom → capturePage → supersampled dither → RAW spooler ──
 
-      // Apply 2× zoom so Chromium renders at 192 effective DPI.
-      // CSS viewport = windowW / RENDER_SCALE ≈ 302 CSS px (80mm) — layout stays correct.
+      // Apply 3× zoom so Chromium renders at 288 effective DPI.
       await printWindow.webContents.setZoomFactor(RENDER_SCALE);
       await new Promise(resolve => setTimeout(resolve, 200));
 
@@ -548,11 +546,10 @@ async function printThermalReceipt(options = {}) {
       const scrollH = await printWindow.webContents.executeJavaScript(
         'Math.ceil(document.body.scrollHeight)'
       );
-      const captureH = Math.min(Math.ceil(scrollH * RENDER_SCALE) + 20, 8000);
+      const captureH = Math.min(Math.ceil(scrollH * RENDER_SCALE) + 30, 9000);
 
-      // Crop to content column with 4 DIP padding on each side to prevent edge clipping.
-      // Receipt is centered: margin = (windowW - contentDIP) / 2.
-      const PAD = 4;
+      // Crop to content column with 6 DIP padding on each side to prevent edge clipping.
+      const PAD = 6;
       const cropX = Math.max(0, Math.floor((windowW - contentDIP) / 2) - PAD);
       const capW = contentDIP + PAD * 2;
 
@@ -562,11 +559,10 @@ async function printThermalReceipt(options = {}) {
       const { width: imgW, height: imgH } = captured.getSize();
       const bgraPixels = captured.toBitmap();
 
-      // Scale: source ~492px → 512 printer dots.  scaleX ≈ 0.96 (near 1:1, crisp).
-      // If Windows DPI scaling is active, imgW may be larger → scaleX > 1 (downscale, even better).
+      // Scale: source ~738px → 512 printer dots (scaleX ≈ 1.44 downscale ratio)
       const scaleX = imgW / printWidthDots;
       const scaleY = scaleX;
-      const printHeightDots = Math.min(Math.ceil(imgH / scaleY), 8000);
+      const printHeightDots = Math.min(Math.ceil(imgH / scaleY), 9000);
 
       const autoCutFlag = options.autoCut !== false;
       const feedLines = [6, 8, 10].includes(Number(options.cutFeedLines)) ? Number(options.cutFeedLines) : 8;
@@ -588,13 +584,22 @@ async function printThermalReceipt(options = {}) {
         parts.push(Buffer.from([0x1d, 0x76, 0x30, 0x00, xL, xH, yL, yH]));
         const chunkBuf = Buffer.alloc(bytesPerRow * numRows, 0);
         for (let r = 0; r < numRows; r++) {
-          const srcY = Math.min(Math.floor((rowStart + r) * scaleY), imgH - 1);
-          const rowOffset = srcY * imgW;
+          const y0 = Math.floor((rowStart + r) * scaleY);
+          const y1 = Math.min(Math.floor((rowStart + r + 1) * scaleY), imgH);
           for (let dotX = 0; dotX < printWidthDots; dotX++) {
-            const srcX = Math.min(Math.floor(dotX * scaleX), imgW - 1);
-            const idx = (rowOffset + srcX) * 4;
-            const lum = 0.299 * bgraPixels[idx + 2] + 0.587 * bgraPixels[idx + 1] + 0.114 * bgraPixels[idx];
-            if (lum < 148) chunkBuf[r * bytesPerRow + (dotX >> 3)] |= (0x80 >> (dotX & 7));
+            const x0 = Math.floor(dotX * scaleX);
+            const x1 = Math.min(Math.floor((dotX + 1) * scaleX), imgW);
+            let totalLum = 0, count = 0;
+            for (let y = y0; y <= y1 && y < imgH; y++) {
+              const rowOffset = y * imgW * 4;
+              for (let x = x0; x <= x1 && x < imgW; x++) {
+                const idx = rowOffset + x * 4;
+                totalLum += 0.299 * bgraPixels[idx + 2] + 0.587 * bgraPixels[idx + 1] + 0.114 * bgraPixels[idx];
+                count++;
+              }
+            }
+            const avgLum = count > 0 ? (totalLum / count) : 255;
+            if (avgLum < 165) chunkBuf[r * bytesPerRow + (dotX >> 3)] |= (0x80 >> (dotX & 7));
           }
         }
         parts.push(chunkBuf);
