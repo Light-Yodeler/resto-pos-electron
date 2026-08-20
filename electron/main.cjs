@@ -485,24 +485,27 @@ async function printThermalReceipt(options = {}) {
     return await printWindowsEscPos(options.deviceName, options.nativeReceipt, fontStyle, options.nativeColumns, options.autoCut !== false, options.cutFeedLines);
   }
 
-  // Mode 2 (direct, Windows): Chromium renders HTML at 96 DPI → capturePage → upscale to
-  //   printer dots in the 1-bit dither loop → ESC/POS raster via RAW spooler.
-  //   1-bit output cannot blur: every dot is pure black or white.
-  //   Upscaling samples the anti-aliased source pixels individually → crisp edges at 203 DPI.
+  // Mode 2 (direct, Windows): Chromium renders HTML at 2× zoom (192 effective DPI) →
+  //   capturePage → scale to 203 DPI printer dots in dither loop → ESC/POS RAW spooler.
+  //   At 2× zoom: source ~488px for 512 printer dots = scaleX ≈ 0.95 (near 1:1, no blur).
+  //   Without zoom: source 242px for 512 dots = scaleX 0.47 (heavy upscale, blocky artifacts).
   // Mode 3 (non-direct): webContents.print with OS dialog.
 
   const PX_PER_MM = 96 / 25.4;      // 3.7795 — Chromium screen DPI
   const DOTS_PER_MM = 203 / 25.4;   // 7.992  — thermal printer DPI
-  const windowW = Math.round(80 * PX_PER_MM);             // 302px (80mm at 96 DPI)
-  const contentPx = Math.round(contentWidth * PX_PER_MM); // 242px for 64mm, 257px for 68mm
-  const printWidthDots = Math.round(contentWidth * DOTS_PER_MM); // 512 for 64mm, 544 for 68mm
+  const RENDER_SCALE = 2;            // 2× zoom for high-res capture
+  // Window at 2× the CSS layout width so zoom doesn't clip
+  const windowW = Math.ceil(80 * PX_PER_MM * RENDER_SCALE) + 8; // ~612 DIP
+  // Content column at 2× zoom (DIP coordinates, not CSS px)
+  const contentDIP = Math.ceil(contentWidth * PX_PER_MM * RENDER_SCALE); // ~484 for 64mm
+  const printWidthDots = Math.round(contentWidth * DOTS_PER_MM); // 512 for 64mm
 
   const tempHtmlPath = path.join(os.tmpdir(), `anda-pos-receipt-${Date.now()}.html`);
   const printWindow = new BrowserWindow({
     x: -2000, y: 0,
     show: true,
     width: windowW,
-    height: 4000,
+    height: 6000,
     frame: false,
     transparent: false,
     backgroundColor: '#ffffff',
@@ -531,29 +534,39 @@ async function printThermalReceipt(options = {}) {
       void document.body.getBoundingClientRect();
       return true;
     })()`);
-    await new Promise(resolve => setTimeout(resolve, 300));
+    await new Promise(resolve => setTimeout(resolve, 200));
 
     if (direct && process.platform === 'win32') {
-      // ── Mode 2: capturePage at 96 DPI → upscale to 203 DPI in dither loop → RAW spooler ──
+      // ── Mode 2: 2× zoom → capturePage → dither → RAW spooler ──
+
+      // Apply 2× zoom so Chromium renders at 192 effective DPI.
+      // CSS viewport = windowW / RENDER_SCALE ≈ 302 CSS px (80mm) — layout stays correct.
+      await printWindow.webContents.setZoomFactor(RENDER_SCALE);
+      await new Promise(resolve => setTimeout(resolve, 200));
+
+      // Content height in CSS px → DIP at current zoom
       const scrollH = await printWindow.webContents.executeJavaScript(
         'Math.ceil(document.body.scrollHeight)'
       );
-      // Crop to content column: receipt is centered, margins = (302 - 242) / 2 = 30px
-      const cropX = Math.max(0, Math.floor((windowW - contentPx) / 2));
-      const captureH = Math.min(scrollH + 8, 3800);
+      const captureH = Math.min(Math.ceil(scrollH * RENDER_SCALE) + 20, 8000);
+
+      // Crop to content column with 4 DIP padding on each side to prevent edge clipping.
+      // Receipt is centered: margin = (windowW - contentDIP) / 2.
+      const PAD = 4;
+      const cropX = Math.max(0, Math.floor((windowW - contentDIP) / 2) - PAD);
+      const capW = contentDIP + PAD * 2;
 
       const captured = await printWindow.webContents.capturePage({
-        x: cropX, y: 0, width: contentPx, height: captureH
+        x: cropX, y: 0, width: capW, height: captureH
       });
       const { width: imgW, height: imgH } = captured.getSize();
       const bgraPixels = captured.toBitmap();
 
-      // Upscale: source is 242px wide → printer needs 512 dots (for 64mm at 203 DPI)
-      // scaleX = 242 / 512 = 0.473 → each printer dot samples srcX = dotX * 0.473
-      // Multiple printer dots share the same source pixel = nearest-neighbor upscale
+      // Scale: source ~492px → 512 printer dots.  scaleX ≈ 0.96 (near 1:1, crisp).
+      // If Windows DPI scaling is active, imgW may be larger → scaleX > 1 (downscale, even better).
       const scaleX = imgW / printWidthDots;
-      const scaleY = scaleX; // uniform aspect ratio
-      const printHeightDots = Math.min(Math.ceil(imgH / scaleY), 6000);
+      const scaleY = scaleX;
+      const printHeightDots = Math.min(Math.ceil(imgH / scaleY), 8000);
 
       const autoCutFlag = options.autoCut !== false;
       const feedLines = [6, 8, 10].includes(Number(options.cutFeedLines)) ? Number(options.cutFeedLines) : 8;
