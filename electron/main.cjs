@@ -435,20 +435,20 @@ const thermalPrintCss = (contentWidthMm = 68, fontStyle = 'distinct') => {
   let typography;
   switch (fontStyle) {
     case 'distinct':
-      typography = { family: '"Segoe UI", "Trebuchet MS", "Lucida Sans Unicode", "DejaVu Sans", Arial, sans-serif', weight: 400, heading: 600, total: 600, size: 12.5 };
+      typography = { family: '"Segoe UI", "Trebuchet MS", "Lucida Sans Unicode", "DejaVu Sans", Arial, sans-serif', weight: 400, heading: 600, total: 600, size: 13 };
       break;
     case 'sansClean':
-      typography = { family: 'Tahoma, Verdana, "Segoe UI", Arial, sans-serif', weight: 400, heading: 600, total: 600, size: 12 };
+      typography = { family: 'Tahoma, Verdana, "Segoe UI", Arial, sans-serif', weight: 400, heading: 600, total: 600, size: 12.5 };
       break;
     case 'bold':
-      typography = { family: 'Arial, "Segoe UI", sans-serif', weight: 600, heading: 700, total: 700, size: 12 };
+      typography = { family: 'Arial, "Segoe UI", sans-serif', weight: 600, heading: 700, total: 700, size: 12.5 };
       break;
     case 'medium':
-      typography = { family: 'Arial, "Segoe UI", sans-serif', weight: 500, heading: 600, total: 600, size: 12.5 };
+      typography = { family: 'Arial, "Segoe UI", sans-serif', weight: 500, heading: 600, total: 600, size: 13 };
       break;
     case 'clear':
     default:
-      typography = { family: 'Consolas, "Courier New", monospace', weight: 400, heading: 600, total: 600, size: 12.5 };
+      typography = { family: 'Consolas, "Courier New", monospace', weight: 400, heading: 600, total: 600, size: 13 };
       break;
   }
   const contentWidth = [64, 68, 72].includes(Number(contentWidthMm)) ? Number(contentWidthMm) : 68;
@@ -485,26 +485,27 @@ async function printThermalReceipt(options = {}) {
     return await printWindowsEscPos(options.deviceName, options.nativeReceipt, fontStyle, options.nativeColumns, options.autoCut !== false, options.cutFeedLines);
   }
 
-  // Mode 2 (direct, Windows): Chromium renders HTML at 3× zoom (288 effective DPI) →
+  // Mode 2 (direct, Windows): Chromium renders HTML at 4× zoom (384 effective DPI) →
   //   capturePage → area-weighted supersampling to 203 DPI printer dots in dither loop → RAW spooler.
-  //   At 3× zoom + area averaging: smooth continuous curves on 0, 6, 8, 9 with no pixelation/blur.
+  //   Key: measure content height at zoom=1 FIRST, then resize window to exact height before zoom,
+  //   preventing OS screen-height limit from clipping the receipt bottom.
   // Mode 3 (non-direct): webContents.print with OS dialog.
 
   const PX_PER_MM = 96 / 25.4;      // 3.7795 — Chromium screen DPI
   const DOTS_PER_MM = 203 / 25.4;   // 7.992  — thermal printer DPI
-  const RENDER_SCALE = 3;            // 3× zoom for high-res supersampled capture
-  // Window at 3× the CSS layout width so zoom doesn't clip
-  const windowW = Math.ceil(80 * PX_PER_MM * RENDER_SCALE) + 16; // ~924 DIP
-  // Content column at 3× zoom (DIP coordinates, not CSS px)
-  const contentDIP = Math.ceil(contentWidth * PX_PER_MM * RENDER_SCALE); // ~726 for 64mm
-  const printWidthDots = Math.round(contentWidth * DOTS_PER_MM); // 512 for 64mm
+  const RENDER_SCALE = 4;            // 4× zoom for high-res supersampled capture (384 DPI effective)
+  // Window width at 1× (CSS px), content at 1× and at zoom (DIP)
+  const windowW1x = Math.ceil(80 * PX_PER_MM) + 4;                       // ~306 CSS px
+  const contentDIP = Math.ceil(contentWidth * PX_PER_MM * RENDER_SCALE);  // ~967 DIP for 64mm at 4×
+  const printWidthDots = Math.round(contentWidth * DOTS_PER_MM);           // 512 for 64mm
 
   const tempHtmlPath = path.join(os.tmpdir(), `anda-pos-receipt-${Date.now()}.html`);
+  // Create window at 1× size first (no zoom) to safely measure content height
   const printWindow = new BrowserWindow({
-    x: -2000, y: 0,
+    x: -4000, y: -4000,           // fully off-screen so OS doesn't limit height
     show: true,
-    width: windowW,
-    height: 8000,
+    width: windowW1x,
+    height: 2000,                  // generous but not OS-limited height at 1×
     frame: false,
     transparent: false,
     backgroundColor: '#ffffff',
@@ -524,34 +525,44 @@ async function printThermalReceipt(options = {}) {
     fs.writeFileSync(tempHtmlPath, documentHtml, 'utf8');
     await printWindow.loadFile(tempHtmlPath);
 
-    await printWindow.webContents.executeJavaScript(`(async () => {
+    // Step 1: wait for fonts & layout at zoom=1
+    const scrollH1x = await printWindow.webContents.executeJavaScript(`(async () => {
       await document.fonts.ready;
       await Promise.all([...document.images].map(img =>
         img.complete ? Promise.resolve() :
         new Promise(resolve => { img.onload = img.onerror = resolve; })
       ));
       void document.body.getBoundingClientRect();
-      return true;
+      return Math.ceil(document.body.scrollHeight);
     })()`);
-    await new Promise(resolve => setTimeout(resolve, 200));
+    await new Promise(resolve => setTimeout(resolve, 150));
 
     if (direct && process.platform === 'win32') {
-      // ── Mode 2: 3× zoom → capturePage → supersampled dither → RAW spooler ──
+      // ── Mode 2: measure → resize → 4× zoom → capturePage → supersampled dither → RAW spooler ──
 
-      // Apply 3× zoom so Chromium renders at 288 effective DPI.
+      // Step 2: resize window to exact content height × RENDER_SCALE before applying zoom.
+      // This bypasses the OS screen-height cap that caused bottom clipping.
+      const windowWZoomed = Math.ceil(windowW1x * RENDER_SCALE) + 16;
+      const windowHZoomed = Math.ceil(scrollH1x * RENDER_SCALE) + 60; // +60 for bottom padding
+      printWindow.setContentSize(windowWZoomed, windowHZoomed);
+      await new Promise(resolve => setTimeout(resolve, 100));
+
+      // Step 3: apply 4× zoom — Chromium now renders at 384 DPI effective.
+      // CSS viewport = windowWZoomed / RENDER_SCALE ≈ 80mm at 96 DPI — layout stays correct.
       await printWindow.webContents.setZoomFactor(RENDER_SCALE);
       await new Promise(resolve => setTimeout(resolve, 200));
 
-      // Content height in CSS px → DIP at current zoom
-      const scrollH = await printWindow.webContents.executeJavaScript(
+      // Step 4: re-measure after zoom reflow (CSS px, zoom-independent)
+      const scrollHFinal = await printWindow.webContents.executeJavaScript(
         'Math.ceil(document.body.scrollHeight)'
       );
-      const captureH = Math.min(Math.ceil(scrollH * RENDER_SCALE) + 30, 9000);
+      // captureH in DIP = CSS px × zoom. Window was sized to scrollH1x×4+60, so this fits safely.
+      const captureH = Math.ceil(scrollHFinal * RENDER_SCALE) + 40;
 
-      // Crop to content column with 6 DIP padding on each side to prevent edge clipping.
-      const PAD = 6;
-      const cropX = Math.max(0, Math.floor((windowW - contentDIP) / 2) - PAD);
-      const capW = contentDIP + PAD * 2;
+      // Crop to content column with 8 DIP padding on each side to prevent edge clipping.
+      const PAD = 8;
+      const cropX = Math.max(0, Math.floor((windowWZoomed - contentDIP) / 2) - PAD);
+      const capW = Math.min(contentDIP + PAD * 2, windowWZoomed - cropX);
 
       const captured = await printWindow.webContents.capturePage({
         x: cropX, y: 0, width: capW, height: captureH
@@ -559,10 +570,11 @@ async function printThermalReceipt(options = {}) {
       const { width: imgW, height: imgH } = captured.getSize();
       const bgraPixels = captured.toBitmap();
 
-      // Scale: source ~738px → 512 printer dots (scaleX ≈ 1.44 downscale ratio)
+      // Downscale from ~984px → 512 printer dots (scaleX ≈ 1.92x downscale = excellent quality).
+      // Box-filter supersampling: each printer dot averages ~4 source pixels.
       const scaleX = imgW / printWidthDots;
       const scaleY = scaleX;
-      const printHeightDots = Math.min(Math.ceil(imgH / scaleY), 9000);
+      const printHeightDots = Math.ceil(imgH / scaleY);
 
       const autoCutFlag = options.autoCut !== false;
       const feedLines = [6, 8, 10].includes(Number(options.cutFeedLines)) ? Number(options.cutFeedLines) : 8;
@@ -585,14 +597,14 @@ async function printThermalReceipt(options = {}) {
         const chunkBuf = Buffer.alloc(bytesPerRow * numRows, 0);
         for (let r = 0; r < numRows; r++) {
           const y0 = Math.floor((rowStart + r) * scaleY);
-          const y1 = Math.min(Math.floor((rowStart + r + 1) * scaleY), imgH);
+          const y1 = Math.min(Math.floor((rowStart + r + 1) * scaleY), imgH - 1);
           for (let dotX = 0; dotX < printWidthDots; dotX++) {
             const x0 = Math.floor(dotX * scaleX);
-            const x1 = Math.min(Math.floor((dotX + 1) * scaleX), imgW);
+            const x1 = Math.min(Math.floor((dotX + 1) * scaleX), imgW - 1);
             let totalLum = 0, count = 0;
-            for (let y = y0; y <= y1 && y < imgH; y++) {
+            for (let y = y0; y <= y1; y++) {
               const rowOffset = y * imgW * 4;
-              for (let x = x0; x <= x1 && x < imgW; x++) {
+              for (let x = x0; x <= x1; x++) {
                 const idx = rowOffset + x * 4;
                 totalLum += 0.299 * bgraPixels[idx + 2] + 0.587 * bgraPixels[idx + 1] + 0.114 * bgraPixels[idx];
                 count++;
