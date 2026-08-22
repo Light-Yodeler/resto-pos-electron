@@ -435,20 +435,20 @@ const thermalPrintCss = (contentWidthMm = 68, fontStyle = 'distinct') => {
   let typography;
   switch (fontStyle) {
     case 'distinct':
-      typography = { family: '"Segoe UI", "Trebuchet MS", "Lucida Sans Unicode", "DejaVu Sans", Arial, sans-serif', weight: 400, heading: 600, total: 600, size: 13 };
+      typography = { family: '"Segoe UI", "Trebuchet MS", "Lucida Sans Unicode", "DejaVu Sans", Arial, sans-serif', weight: 400, heading: 600, total: 600, size: 13.5 };
       break;
     case 'sansClean':
-      typography = { family: 'Tahoma, Verdana, "Segoe UI", Arial, sans-serif', weight: 400, heading: 600, total: 600, size: 12.5 };
+      typography = { family: 'Tahoma, Verdana, "Segoe UI", Arial, sans-serif', weight: 400, heading: 600, total: 600, size: 13 };
       break;
     case 'bold':
-      typography = { family: 'Arial, "Segoe UI", sans-serif', weight: 600, heading: 700, total: 700, size: 12.5 };
+      typography = { family: 'Arial, "Segoe UI", sans-serif', weight: 600, heading: 700, total: 700, size: 13 };
       break;
     case 'medium':
-      typography = { family: 'Arial, "Segoe UI", sans-serif', weight: 500, heading: 600, total: 600, size: 13 };
+      typography = { family: 'Arial, "Segoe UI", sans-serif', weight: 500, heading: 600, total: 600, size: 13.5 };
       break;
     case 'clear':
     default:
-      typography = { family: 'Consolas, "Courier New", monospace', weight: 400, heading: 600, total: 600, size: 13 };
+      typography = { family: 'Consolas, "Courier New", monospace', weight: 400, heading: 600, total: 600, size: 13.5 };
       break;
   }
   const contentWidth = [64, 68, 72].includes(Number(contentWidthMm)) ? Number(contentWidthMm) : 68;
@@ -559,9 +559,14 @@ async function printThermalReceipt(options = {}) {
       // captureH in DIP = CSS px × zoom. Window was sized to scrollH1x×4+60, so this fits safely.
       const captureH = Math.ceil(scrollHFinal * RENDER_SCALE) + 40;
 
-      // Crop to content column with 8 DIP padding on each side to prevent edge clipping.
-      const PAD = 8;
-      const cropX = Math.max(0, Math.floor((windowWZoomed - contentDIP) / 2) - PAD);
+      // ── Correct cropX calculation ──
+      // The HTML body has `width: 80mm; margin: 0` — it is LEFT-ALIGNED at DIP x=0, NOT centered.
+      // The .receipt has `width: contentWidthMm; margin: 0 auto` — centered INSIDE the 80mm body.
+      // Receipt left edge in CSS px = (80mm - contentWidthMm) / 2 * PX_PER_MM
+      //                          DIP = CSS px × RENDER_SCALE
+      const receiptLeftDIP = Math.floor(((80 - contentWidth) / 2) * PX_PER_MM * RENDER_SCALE);
+      const PAD = 12; // generous padding to guarantee no clipping
+      const cropX = Math.max(0, receiptLeftDIP - PAD);
       const capW = Math.min(contentDIP + PAD * 2, windowWZoomed - cropX);
 
       const captured = await printWindow.webContents.capturePage({
