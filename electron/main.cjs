@@ -334,10 +334,19 @@ function initializeDatabase() {
 function normalizedSearch(value) { return String(value || '').trim().toUpperCase().replace(/[^A-Z0-9]/g, ''); }
 function transactionQuery(options = {}) {
   const pageSize = [25, 50, 100].includes(Number(options.pageSize)) ? Number(options.pageSize) : 25, page = Math.max(1, Number(options.page) || 1), where = [], parameters = [];
-  const month = /^\d{4}-\d{2}$/.test(String(options.month || '')) ? String(options.month) : new Date().toISOString().slice(0, 7);
   const search = normalizedSearch(options.search);
   let effectiveFrom = options.from || '';
   let effectiveTo = options.to || '';
+  let month = /^\d{4}-\d{2}$/.test(String(options.month || '')) ? String(options.month) : '';
+  if (!month) {
+    if (search) {
+      const dateMatch = search.match(/(\d{4})[-]?(\d{2})[-]?\d{2}/);
+      if (dateMatch) month = `${dateMatch[1]}-${dateMatch[2]}`;
+    }
+    if (!month && effectiveFrom) month = effectiveFrom.slice(0, 7);
+    else if (!month && effectiveTo) month = effectiveTo.slice(0, 7);
+    else if (!month) month = new Date().toISOString().slice(0, 7);
+  }
   if (!effectiveFrom && effectiveTo) {
     effectiveFrom = `${effectiveTo.slice(0, 7)}-01`;
   } else if (effectiveFrom && !effectiveTo) {
