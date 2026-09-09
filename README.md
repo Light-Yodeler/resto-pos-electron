@@ -1,77 +1,141 @@
 # Anda POS
 
-MVP aplikasi kasir desktop offline yang dapat digunakan dengan identitas restoran sendiri. Mendukung kasir dine-in/takeaway, pencatatan waiter per order, manajemen meja, fitur dapur opsional, stok terbatas atau unlimited, split bill fleksibel dengan bill tertunda, pajak 10% per menu, laporan transaksi terperinci, grafik pendapatan harian per bulan dan ekspor CSV, nomor order/invoice unik, pembayaran tunai/kartu/QRIS, bahasa Indonesia/Inggris, pencetakan struk thermal 80 mm, manajemen menu per kategori, serta manajemen pengguna berbasis PIN.
+Aplikasi kasir desktop offline untuk restoran dan kafe, dirancang untuk berjalan langsung di komputer lokal tanpa ketergantungan koneksi internet. Aplikasi ini menangani alur transaksi dine-in dan takeaway, split bill per tamu, pencetakan struk thermal ESC/POS, shift kerja kasir, serta pelaporan keuangan berbasis SQLite.
 
-## Akun awal
+## Informasi Aplikasi
 
-- Owner — PIN `1234`
-- Admin — PIN `2345`
-- Kasir 01 — PIN `3456`
+Aplikasi dibangun menggunakan arsitektur desktop berbasis Electron dan penyimpanan lokal SQLite:
 
-Segera ubah PIN awal melalui menu **Manajemen pengguna** setelah login sebagai Owner. PIN disimpan sebagai hash SHA-256 di database lokal.
+- Runtime: Electron 37 dan Node.js 22
+- Antarmuka: HTML5, CSS kustom, dan Vanilla JavaScript tanpa build tools yang memperlambat startup
+- Database: SQLite lokal (`anda-pos.db`) memanfaatkan modul bawaan `node:sqlite` dengan mode Write-Ahead Logging (WAL)
+- Ekspor Dokumen: Pustaka `exceljs` untuk menghasilkan berkas native Excel (`.xlsx`) multi-lembar kerja
+- Kompatibilitas OS: Windows 10/11 dan macOS (Apple Silicon serta Intel)
 
-## Menjalankan
+Seluruh data transaksi, data menu, pengaturan meja, dan riwayat shift tersimpan di penyimpanan lokal komputer pengguna. Tidak ada data yang dikirim ke server luar.
 
+## Kegunaan dan Alur Operasional
+
+### 1. Penjualan dan Pengelolaan Meja
+Kasir dapat memilih tipe pesanan Dine-In atau Takeaway. Pada pesanan Dine-In, sistem meminta kasir memilih nomor meja dan mencatat nama waiter yang melayani. Fitur transfer meja memungkinkan pemindahan seluruh pesanan aktif ke meja lain tanpa menghapus catatan pesanan yang sudah masuk.
+
+### 2. Split Bill Fleksibel
+Untuk rombongan tamu yang ingin membayar terpisah, kasir dapat memindahkan sebagian porsi makanan atau minuman ke bill terpisah (Saved Bill). Setiap sub-bill mencatat rincian porsi tamu secara tersendiri, dapat dicetak terpisah, dan diselesaikan tanpa mengganggu sisa pesanan di meja utama.
+
+### 3. Pembayaran dan Kasir
+Aplikasi mendukung tiga metode pembayaran:
+- Tunai: Dilengkapi kalkulator kembalian, pilihan pecahan cepat dari Rp100 hingga Rp100.000, serta tombol bayar dengan uang pas.
+- Kartu: Pencatatan nomor referensi pembayaran kartu debit atau kredit.
+- QRIS: Pencatatan pembayaran dompet digital non-tunai.
+
+### 4. Pencetakan Struk Thermal 80 mm
+Pencetakan struk mendukung printer thermal berukuran 80 mm melalui dua jalur di Windows:
+- Jalur Teks Native ESC/POS: Mengirim perintah teks langsung ke spooler printer RAW dengan pilihan kerapatan 42 atau 48 karakter.
+- Jalur Raster Monokrom: Mengubah struk menjadi gambar hitam-putih 1:1 pada lebar 576 dot (203 DPI) untuk mencetak font TrueType dengan angka 6, 8, dan 9 yang terbaca jelas.
+- Pengaturan Struk: Tersedia pilihan margin konten (64 mm, 68 mm, atau 72 mm), opsi feed 6 hingga 10 baris, serta perintah pemotong kertas otomatis (auto-cut).
+
+### 5. Pengendalian Shift Kasir
+Setiap sesi kerja kasir wajib diawali dengan membuka shift baru:
+- Kasir mencatat modal uang tunai awal di laci kas.
+- Sistem mencatat seluruh transaksi yang diselesaikan selama shift tersebut aktif.
+- Saat shift ditutup, kasir memasukkan jumlah uang fisik aktual di laci.
+- Sistem langsung menghitung selisih kas (apakah seimbang, lebih, atau kurang) dan menyimpan rincian shift ke database.
+
+### 6. Hak Akses dan Keamanan Berbasis PIN
+Navigasi dan fungsi penting dilindungi oleh sistem login PIN 4 angka:
+- PIN disimpan dalam format hash SHA-256 di database lokal.
+- Tindakan berisiko tinggi seperti Void Transaksi dan Reset Transaksi memerlukan verifikasi PIN milik Owner atau Admin.
+- Sistem mencatat identitas peminta void, nama otorisator, waktu, serta alasan pembatalan untuk keperluan audit.
+
+### 7. Laporan Akuntansi dan Pajak
+Laporan keuangan menyusun ringkasan penjualan dengan alur yang jelas:
+- Penjualan Kotor dikurangi Diskon menghasilkan Penjualan Bersih.
+- Pajak restoran (tarif default 10%, dapat disesuaikan) dihitung dari dasar penjualan kena pajak.
+- Audit memisahkan penjualan yang kena pajak dan penjualan bebas pajak.
+- Ekspor laporan ke format Excel native (`.xlsx`) menghasilkan tiga lembar kerja: Ringkasan Eksekutif, Buku Besar Seluruh Transaksi, dan Rincian Menu Terjual.
+
+## Performa dan Skala Data
+
+Untuk menangani operasional restoran bervolume tinggi, sistem penyimpanan database dioptimalkan secara khusus:
+
+- Pagination SQLite: Tampilan tabel transaksi dan riwayat shift menggunakan query `LIMIT` dan `OFFSET` langsung pada SQLite dengan opsi 25, 50, atau 100 baris per halaman.
+- Indeks Tanggal Bisnis: Database memakai indeks pada kolom `business_date` sehingga pemfilteran tanggal dan pencarian ID tetap responsif pada database besar.
+- Pengujian Skala 100.000 Transaksi: Repository menyertakan skrip pembuat data pengujian (`npm run dummy-db`) yang mengisi database dengan 100.000 transaksi acak selama 730 hari operasional. Pengujian memvalidasi bahwa query filter laporan bulanan, grafik harian, dan paginasi berjalan dalam hitungan milidetik tanpa membebani memori render.
+- Suite Pengujian Otomatis: Memiliki 94 skenario pengujian unit (`npm test`) yang memverifikasi logika perpajakan, split bill, rekonsiliasi kas shift, integritas file backup, dan kalkulasi ekspor Excel.
+
+## Akun Bawaan Awal
+
+Saat aplikasi pertama kali dijalankan, sistem menyediakan tiga akun awal:
+
+- Owner: PIN `1234` (Akses penuh seluruh menu, manajemen user, reset data, dan backup)
+- Admin: PIN `2345` (Akses menu operasional, laporan, dan otorisasi void)
+- Kasir 01: PIN `3456` (Akses transaksi penjualan dan shift kasir)
+
+Ubah seluruh PIN bawaan melalui menu Manajemen Pengguna setelah masuk sebagai Owner.
+
+## Kebutuhan Sistem
+
+- Node.js versi 22.0.0 atau yang lebih baru
+- npm versi 10.0.0 atau yang lebih baru
+- Windows 10/11 (64-bit) atau macOS 12 Monterey ke atas
+
+## Cara Instalasi dan Menjalankan
+
+1. Kloning repositori:
 ```bash
-npm install
-npm start
+git clone https://github.com/Light-Yodeler/resto-pos-electron.git
+cd resto-pos-electron
 ```
 
-Data disimpan sebagai database SQLite `anda-pos.db` di folder data aplikasi milik pengguna. Menu **Pengaturan** menyediakan penggantian nama restoran dan logo, backup database SQLite asli berekstensi `.db`, serta restore untuk memindahkan seluruh data ke komputer lain. Untuk membuat installer macOS dan Windows, jalankan `npm run dist:mac` atau `npm run dist:win`.
+2. Pasang dependensi:
+```bash
+npm install
+```
 
-## Database dummy 100.000 transaksi
+3. Jalankan aplikasi dalam mode pengembangan:
+```bash
+npm start
+```
+Atau gunakan:
+```bash
+npm run dev
+```
 
-Jalankan `npm run dummy-db` untuk membuat `outputs/Anda-POS-Dummy-100K.db`. Database pengujian ini berisi 100.000 transaksi selama 730 hari, transaksi void, dua shift per hari, pembayaran tunai/kartu/QRIS, diskon, serta menu kena pajak dan bebas pajak. Gunakan menu **Pengaturan → Restore database** untuk memuatnya. Akun pengujian tetap memakai PIN awal Owner `1234`, Admin `2345`, serta Kasir 01/02 `3456`. Restore mengganti database aktif, sehingga buat backup data asli terlebih dahulu.
+4. Jalankan uji unit otomatis:
+```bash
+npm test
+```
 
-## Versi 1.12.1
+## Membangun Paket Distribusi Installer
 
-- Kartu saved bill pada sidebar split bill sekarang menampilkan seluruh isi bill dalam format `jumlah × nama menu`, sehingga kasir dapat langsung melihat makanan atau minuman milik setiap tamu tanpa membuka Manage all.
-- Nama item dan keterangan jumlah porsi mengikuti bahasa Indonesia atau Inggris yang sedang digunakan.
+Untuk menghasilkan file instalasi desktop mandiri:
 
-## Versi 1.12.0
+- Paket macOS (DMG dan berkas ZIP):
+```bash
+npm run dist:mac
+```
+Output berkas akan dibuat di folder `release/`.
 
-- Void transaksi kini selalu meminta PIN pengguna Owner atau Admin yang aktif. Laporan menyimpan pemberi otorisasi, peminta void, waktu, dan alasan void.
-- Manajemen role memungkinkan Owner menambah role bilingual dan menentukan hak akses menu untuk setiap role.
-- Laporan memakai alur akuntansi yang lebih jelas: penjualan kotor dikurangi diskon menjadi penjualan bersih, lalu pajak ditambahkan menjadi total diterima.
-- Audit pajak memisahkan dasar penjualan kena pajak dan penjualan bebas pajak, termasuk pada rincian setiap invoice. Contoh penjualan bersih Rp688.000 dengan dasar kena pajak Rp613.000 menghasilkan pajak Rp61.300 pada tarif 10%, sementara Rp75.000 ditampilkan sebagai penjualan bebas pajak.
-- Kartu laporan dan ukuran angka dibuat lebih teratur serta responsif untuk layar desktop yang berbeda.
+- Paket Windows (Installer NSIS dan versi Portable 64-bit):
+```bash
+npm run dist:win
+```
+Output berkas installer `.exe` akan tersimpan di folder `release/`.
 
-## Versi 1.11.0
+## Backup dan Pemulihan Data
 
-- Penjualan bersih dihitung sebelum pajak; pajak dan total pembayaran ditampilkan terpisah.
-- Pengaturan disusun ulang menjadi workspace yang rapi dan responsif.
-- Lapisan terjemahan Indonesia–Inggris mencakup layar, dialog, laporan, pagination, serta fitur baru.
+Menu Pengaturan menyediakan opsi pemeliharaan data:
 
-Untuk thermal printer Windows, atur ukuran kertas printer ke **80 mm / Receipt** melalui Windows Printer Preferences. Setelah itu pilih printer melalui **Deteksi printer**, gunakan area konten **64 mm · Aman**, simpan pengaturan, lalu gunakan **Cetak struk uji**. Aplikasi menyerahkan panjang roll kepada driver Windows agar driver thermal yang tidak mendukung ukuran halaman dinamis tidak menghasilkan kertas kosong; jalur yang sama digunakan pada mode cetak langsung.
+- Backup Database Penuh: Menghasilkan salinan database SQLite aktif (`.db`). File ini memuat seluruh pengaturan, pengguna, menu, shift, dan riwayat transaksi.
+- Restore Database: Mengganti database aktif dengan file cadangan `.db`. Sistem melakukan uji integritas SQLite (`PRAGMA quick_check`) sebelum penimpaan data disetujui. Opsi ini dilindungi verifikasi PIN Owner.
+- Backup dan Restore Menu: Format berkas khusus berekstensi `.andamenu` untuk memindahkan daftar kategori dan produk menu antar cabang tanpa memengaruhi catatan transaksi lokal.
 
-Versi 1.6.0 menggunakan SQLite lokal (`anda-pos.db`) dengan mode WAL dan indeks tanggal transaksi. Saat pertama dibuka, data JSON lama dimigrasikan otomatis dan salinan `anda-pos-data.json.migrated-backup` tetap dipertahankan. Cetak langsung Windows merasterisasi struk sebelum dikirim ke driver untuk menghindari keluaran kertas kosong pada driver thermal tertentu.
+## Membuat Database Uji untuk Benchmark
 
-Mulai versi 1.6.1, menu **Buat backup** menghasilkan database SQLite asli berekstensi `.db`. Restore memeriksa integritas SQLite dan tabel wajib sebelum mengganti database aktif. Backup `.andapos` lama tetap didukung untuk restore.
+Jalankan perintah berikut untuk membuat database pengujian dengan 100.000 transaksi:
 
-Versi 1.6.2 melewati silent print Chromium pada Windows. Struk dirender menjadi PNG lalu dicetak langsung melalui Windows GDI Print Spooler tanpa dialog; mode cetak dengan dialog tetap menggunakan jalur Chromium yang sudah berfungsi.
+```bash
+npm run dummy-db
+```
 
-Versi 1.6.3 mengekstrak skrip GDI dari paket `app.asar` ke folder sementara sebelum PowerShell dijalankan, lalu menghapus file sementara setelah pencetakan selesai.
-
-Versi 1.6.4 memotong hasil raster tepat pada batas struk sebelum dikirim ke GDI. Ini menghilangkan pengecilan ganda sehingga lebar hasil cetak sesuai pilihan area konten 64/68/72 mm.
-
-Versi 1.6.5 menambahkan pilihan gaya font struk: **Tipis & jelas** (Courier New monospace), **Sedang**, dan **Tebal**. Pilihan berlaku pada cetak langsung maupun cetak melalui dialog.
-
-Versi 1.6.6 merender cetak langsung pada resolusi 2,25× dan mengubah raster menjadi hitam-putih murni sebelum dikirim ke printer 203 DPI. Profil **Jelas** memakai Arial/Segoe UI medium agar garis karakter tidak berlubang pada thermal head.
-
-Versi 1.6.7 membatalkan skala 2,25× karena skala tersebut memperbesar tata letak dan memotong sisi kanan pada printer tertentu. Ukuran kembali proporsional, dengan ambang hitam-putih 0,58 yang lebih seimbang.
-
-Versi 1.7.0 mengganti jalur utama **Cetak langsung tanpa dialog** di Windows menjadi teks native ESC/POS melalui spooler RAW. Huruf, jarak, dan kolom harga diproses langsung oleh printer tanpa screenshot, PDF, atau skala driver. Lebar default 42 karakter aman untuk printer 80 mm generik; 48 karakter tersedia untuk printer dengan area cetak 576-dot. Mode grafis Windows tetap tersedia sebagai kompatibilitas untuk printer yang tidak mendukung ESC/POS. Cetak melalui dialog memakai profil **Tipis & jelas** berbasis Courier New 400 agar teks tidak terlalu bold.
-
-Versi 1.7.1 memperbaiki spasi Unicode pada format Rupiah agar tidak lagi menjadi tanda `?` di ESC/POS, menambah jarak antarkolom dan garis pemisah sebelum subtotal, memperbesar judul secara vertikal, serta mengirim perintah partial-cut setelah cetak langsung. Opsi auto-cut dapat dimatikan dari Pengaturan. Profil dialog memakai Consolas sebagai font utama agar goresan karakter lebih stabil pada thermal printer.
-
-Versi 1.7.2 memperbaiki formatter ESC/POS yang sebelumnya tanpa sengaja merapatkan kembali spasi antarkolom. Nama item dan nominal kini benar-benar rata kiri/kanan pada 42 atau 48 karakter. Judul dikembalikan ke tinggi normal agar proporsinya menyerupai struk dialog. Sebelum partial-cut, printer sekarang melakukan feed 8 baris secara default; jaraknya dapat dipilih 6, 8, atau 10 baris dari Pengaturan agar footer tidak ikut terpotong.
-
-Versi 1.8.0 memperbaiki siklus shift kasir. Shift sekarang memiliki ID unik, nama, kasir pembuka, waktu mulai/selesai, saldo awal, uang tunai aktual, selisih kas, rincian tunai/kartu/QRIS, dan riwayat. Transaksi baru menyimpan ID shift aktif. Ringkasan **Penjualan hari ini** hanya menghitung transaksi pada tanggal bisnis hari ini, sedangkan ringkasan shift hanya menghitung transaksi yang benar-benar terkait dengan shift tersebut. Data shift lama yang tidak memiliki ID direset ke status tutup agar dapat dimulai ulang secara benar. Pada profil ESC/POS **Tipis & jelas**, subtotal dan total tidak lagi dicetak bold sehingga angka seperti 160.000 tidak tampak menyerupai 180.000.
-
-Versi 1.8.1 mengubah input saldo awal dan uang tunai aktual dari kelipatan Rp1.000 menjadi satuan Rp1. Kolom shift kini menerima nominal receh seperti Rp35.200.
-
-Versi 1.9.0 menambahkan alur bill lengkap dan kontrol audit operasional. Kasir dapat mencetak unpaid bill sebelum pembayaran, closed bill setelah pembayaran, mencetak ulang transaksi, serta memilih bill tamu atau salinan resto. Pembayaran tunai mencatat uang tamu, tombol uang pas, pilihan pecahan Rp100–Rp100.000, dan kembalian. Tarif pajak dapat diubah dari Pengaturan dan setiap transaksi menyimpan tarif yang digunakan. Pengaturan juga menyediakan pilihan diskon persen/nominal, backup/restore khusus menu berekstensi `.andamenu`, serta item Miscellaneous dengan pilihan pajak. Owner dan Admin dapat melakukan void dengan alasan; transaksi void tetap muncul dalam laporan tetapi dikeluarkan dari pendapatan, grafik, dan perhitungan kas shift. Order baru diwajibkan memiliki shift aktif dan meja yang dipilih, sementara rincian transaksi sekarang menampilkan identitas shift.
-
-Versi 1.9.1 menambahkan pencarian ID pada Laporan transaksi dan riwayat Shift kasir. Pengguna dapat memasukkan ID lengkap, empat angka nomor urut terakhir seperti `0042`, atau delapan angka tanggal di tengah seperti `20260813`. Pencarian transaksi memeriksa ID invoice dan ID order serta langsung memperbarui rincian, ringkasan, dan grafik laporan.
-
-Versi 1.10.0 menambahkan pagination berbasis SQLite pada tabel rincian transaksi dan riwayat shift. Query memakai `COUNT`, `LIMIT`, dan `OFFSET`, dengan pilihan 25, 50, atau 100 baris per halaman serta navigasi Pertama, Sebelumnya, Berikutnya, dan Terakhir. Filter tanggal, metode pembayaran, kasir, dan pencarian ID dijalankan sebelum pagination. Ringkasan penjualan, metode pembayaran, menu terlaris, dan grafik bulanan tetap menghitung seluruh hasil filter, bukan hanya halaman aktif. Riwayat shift kini dicerminkan ke tabel SQLite berindeks agar tidak lagi dibatasi 30 data.
+Perintah ini akan menghasilkan berkas `outputs/Anda-POS-Dummy-100K.db`. Anda dapat memuat berkas ini melalui menu Pengaturan > Restore database untuk menguji kecepatan query dan tampilan laporan pada data riil berskala besar.
